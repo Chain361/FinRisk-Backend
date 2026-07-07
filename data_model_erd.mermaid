@@ -1,0 +1,132 @@
+erDiagram
+    subdistricts {
+        int subdistrict_id PK
+        text name_th
+        text municipality_name
+        text district
+        text province
+        text data_completeness_note
+    }
+    vendors {
+        int vendor_id PK
+        text name
+        text tin
+        int tin_masked
+    }
+    users {
+        int user_id PK
+        text username
+        text role "admin|municipality_user|auditor|viewer"
+        int subdistrict_id FK
+    }
+    projects {
+        text project_id PK "e-GP"
+        int subdistrict_id FK
+        int budget_year "พ.ศ."
+        text project_name
+        text project_type
+        text purchase_method
+        real budget_amount
+        real reference_price
+        real contract_value
+        real price_ratio
+        text transaction_date
+        text contract_status
+        int vendor_id FK
+        text data_quality_note
+    }
+    financial_statements {
+        int fs_id PK
+        int subdistrict_id FK
+        int fiscal_year "พ.ศ."
+        text statement_type
+        text category
+        text account_item
+        real value
+        text unit "บาท|ร้อยละ|เท่า"
+        text detail_level "line_item..total"
+    }
+    risk_factors {
+        text factor_code PK "A1,A2,A3,D1,F1,Y*"
+        text scope "project|annual"
+        text name_th
+        text formula
+        text params_json
+        real weight
+        int enabled
+    }
+    assessment_runs {
+        int run_id PK
+        text run_at
+        text factor_config_snapshot
+    }
+    project_risk_results {
+        int result_id PK
+        int run_id FK
+        text project_id FK
+        text factor_code FK
+        int triggered
+        int computable "0=ข้อมูลไม่พอ"
+        real observed_value
+        text evidence_text
+    }
+    project_risk_scores {
+        int score_id PK
+        int run_id FK
+        text project_id FK
+        real risk_score "0-100"
+        text risk_level "low|medium|high"
+        text summary_text
+    }
+    annual_risk_results {
+        int result_id PK
+        int run_id FK
+        int subdistrict_id FK
+        int fiscal_year
+        text factor_code FK
+        int triggered
+        int computable
+        text evidence_text
+    }
+    audit_assignments {
+        int assignment_id PK
+        text project_id FK
+        int assigned_to FK "auditor"
+        int assigned_by FK
+        text priority
+        text status
+    }
+    audit_reports {
+        int report_id PK
+        int assignment_id FK
+        int likelihood "1-5"
+        int impact "1-5"
+        int impact_score "1-5"
+        int risk_level "1-5"
+        text findings
+    }
+    auditor_feedback {
+        int feedback_id PK
+        text project_id FK
+        int user_id FK
+        text comment
+        int manual_risk_score "1-5"
+    }
+
+    subdistricts ||--o{ projects : ""
+    subdistricts ||--o{ financial_statements : ""
+    subdistricts ||--o{ annual_risk_results : ""
+    subdistricts ||--o{ users : ""
+    vendors ||--o{ projects : ""
+    projects ||--o{ project_risk_results : ""
+    projects ||--o{ project_risk_scores : ""
+    projects ||--o{ audit_assignments : ""
+    projects ||--o{ auditor_feedback : ""
+    risk_factors ||--o{ project_risk_results : ""
+    risk_factors ||--o{ annual_risk_results : ""
+    assessment_runs ||--o{ project_risk_results : ""
+    assessment_runs ||--o{ annual_risk_results : ""
+    assessment_runs ||--o{ project_risk_scores : ""
+    users ||--o{ audit_assignments : ""
+    audit_assignments ||--o{ audit_reports : ""
+    users ||--o{ auditor_feedback : ""

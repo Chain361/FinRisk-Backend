@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Local DB (สร้างใหม่ได้จาก seed_database.py)
+# หมายเหตุ: ถ้าต้องการ commit fraud_risk.db ให้ลบบรรทัดล่างออก
+fraud_risk.db
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+.env
