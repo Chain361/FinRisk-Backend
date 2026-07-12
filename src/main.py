@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import API_TITLE, API_VERSION, CORS_ORIGINS, DB_PATH
-from .routers import audit, auth, projects, risk, subdistricts
+from .routers import audit, auth, financials, projects, risk, subdistricts
 
 app = FastAPI(title=API_TITLE, version=API_VERSION)
 
@@ -27,6 +27,7 @@ app.include_router(subdistricts.router)
 app.include_router(projects.router)
 app.include_router(risk.router)
 app.include_router(audit.router)
+app.include_router(financials.router)
 
 
 @app.get("/health", tags=["meta"])
