@@ -37,6 +37,20 @@ def test_admin_sees_all():
     assert summary["total"] > 0
 
 
+def test_financial_statements_routes():
+    headers = {"X-Username": "thachang_user"}
+
+    r = client.get("/financial-statements", headers=headers)
+    assert r.status_code == 200
+    rows = r.json()
+    assert rows
+    assert all(row["subdistrict_id"] == 1 for row in rows)
+
+    r2 = client.get("/financials", headers=headers)
+    assert r2.status_code == 200
+    assert len(r2.json()) == len(rows)
+
+
 def test_wrong_password():
     r = client.post("/auth/login", json={"username": "admin", "password": "nope"})
     assert r.status_code == 401

@@ -12,6 +12,7 @@
 
 | อยากรู้เรื่อง | เปิดไฟล์ |
 |---|---|
+| สถาปัตยกรรม backend + integration กับ frontend repo | `docs/ARCHITECTURE.md` |
 | โจทย์/ภาพรวมทั้งระบบ | `Mission 3_ Local Budget Fraud Risk & Document Intelligence Assistant.pdf` |
 | โครงสร้างฐานข้อมูล (ตาราง + เหตุผล) | `data_model_design.md`, `data_model_erd.mermaid` |
 | นิยามคอลัมน์ CSV ต้นทาง | `_schema_dictionary.md` |
