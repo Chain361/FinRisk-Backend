@@ -14,4 +14,9 @@ fraud_risk.db
 .vscode/
 .idea/
 .DS_Store
+
+# Secrets / deploy — Vercel CLI เขียน VERCEL_OIDC_TOKEN ลง .env.local
 .env
+.env.*
+!.env.example
+.vercel/
