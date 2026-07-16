@@ -59,12 +59,19 @@ CREATE TABLE vendors (
     UNIQUE(name)
 );
 
+-- บทบาทผู้ใช้ (ที่มา: roles.md — source of truth; สิทธิ์/scope บังคับที่ app layer ดู src/auth.py)
+CREATE TABLE roles (
+    role_code       TEXT PRIMARY KEY,
+    display_name_th TEXT NOT NULL,
+    description     TEXT
+);
+
 CREATE TABLE users (
     user_id        INTEGER PRIMARY KEY AUTOINCREMENT,
     username       TEXT NOT NULL UNIQUE,
     password_hash  TEXT NOT NULL,
     display_name   TEXT,
-    role           TEXT NOT NULL CHECK (role IN ('admin','municipality_user','auditor','viewer')),
+    role           TEXT NOT NULL REFERENCES roles(role_code),
     subdistrict_id INTEGER REFERENCES subdistricts(subdistrict_id),
     created_at     TEXT DEFAULT (datetime('now'))
 );
@@ -358,14 +365,33 @@ APP_CONFIG = [
     ("risk_level_high_min", "60", "risk_score > ค่านี้ → high"),
 ]
 
-# mock users ตาม role ใน §3.3 — รหัสผ่านทุกคน: password123 (mock login เท่านั้น)
+# บทบาทตาม roles.md (5 role) + admin สำหรับดูแลระบบ — สิทธิ์/scope บังคับที่ app layer (src/auth.py)
+ROLES = [
+    # (role_code, display_name_th, description)
+    ("admin", "ผู้ดูแลระบบ",
+     "ดูแลระบบทั้งหมด ตั้งค่า risk factors / app_config และจัดการผู้ใช้"),
+    ("regional_supervisor", "ผู้บริหาร/ผู้กำกับดูแลระดับอำเภอ/จังหวัด",
+     "เปรียบเทียบและติดตามความเสี่ยงของหลายพื้นที่ในระดับอำเภอ/จังหวัด"),
+    ("local_executive", "ผู้บริหาร (นายก อบต. / ปลัด)",
+     "ติดตามภาพรวมของตำบลเพื่อใช้ประกอบการอนุมัตินโยบายและกำกับการบริหารความเสี่ยง"),
+    ("project_auditor", "ผู้ตรวจสอบโครงการ",
+     "ตรวจสอบและจัดลำดับความสำคัญของโครงการที่มีความเสี่ยง พร้อมมอบหมายงานให้นักวิเคราะห์"),
+    ("risk_analyst", "นักวิเคราะห์ข้อมูล / ทีมตรวจสอบภายใน",
+     "รับงานตรวจสอบ วิเคราะห์ความเสี่ยง และจัดทำรายงานผล"),
+    ("public_user", "ประชาชนทั่วไป",
+     "ตรวจสอบความโปร่งใสของโครงการในหน่วยงานท้องถิ่น (ไม่เห็นข้อมูลที่ถูกปิดไว้ ไม่มีสิทธิ์แก้ไข)"),
+]
+
+# mock users ตาม roles.md — 1 คนต่อ role + ครบ 3 ตำบลสำหรับทดสอบ scope; รหัสผ่านทุกคน: password123
 MOCK_USERS = [
     ("admin", "ผู้ดูแลระบบ", "admin", None),
-    ("thachang_user", "ผู้บริหาร/ผู้ตรวจสอบโครงการ ทต.ท่าช้าง", "municipality_user", "ท่าช้าง"),
-    ("pingkhong_user", "ผู้บริหาร/ผู้ตรวจสอบโครงการ ทต.ปิงโค้ง", "municipality_user", "ปิงโค้ง"),
-    ("yonok_user", "ผู้บริหาร/ผู้ตรวจสอบโครงการ ทต.โยนก", "municipality_user", "โยนก"),
-    ("auditor1", "นักวิเคราะห์/ผู้ตรวจสอบ 1", "auditor", None),
-    ("viewer", "ผู้ชมทั่วไป", "viewer", None),
+    ("supervisor1", "ผู้กำกับดูแลระดับอำเภอ/จังหวัด", "regional_supervisor", None),
+    ("thachang_user", "นายก/ปลัด ทต.ท่าช้าง", "local_executive", "ท่าช้าง"),
+    ("pingkhong_user", "นายก/ปลัด ทต.ปิงโค้ง", "local_executive", "ปิงโค้ง"),
+    ("yonok_user", "นายก/ปลัด ทต.โยนก", "local_executive", "โยนก"),
+    ("auditor1", "ผู้ตรวจสอบโครงการ ทต.ท่าช้าง", "project_auditor", "ท่าช้าง"),
+    ("analyst1", "นักวิเคราะห์ความเสี่ยง ทต.ท่าช้าง", "risk_analyst", "ท่าช้าง"),
+    ("public1", "ประชาชนทั่วไป", "public_user", None),
 ]
 
 PINGKHONG_NOTE = ("ข้อมูลสรุป: ไม่มีหน่วยงาน วันที่ พิกัด TIN และเลขสัญญา — "
@@ -545,6 +571,9 @@ def seed_risk_factors(cur):
 
 
 def seed_users_config(cur, sub_id):
+    # roles ต้องมาก่อน users (users.role FK → roles.role_code)
+    cur.executemany("INSERT INTO roles (role_code, display_name_th, description) VALUES (?,?,?)",
+                    ROLES)
     for username, display, role, sub in MOCK_USERS:
         cur.execute("""INSERT INTO users (username, password_hash, display_name, role, subdistrict_id)
             VALUES (?,?,?,?,?)""",
@@ -553,7 +582,7 @@ def seed_users_config(cur, sub_id):
     for key, value, desc in APP_CONFIG:
         cur.execute("INSERT INTO app_config (key, value, description) VALUES (?,?,?)",
                     (key, value, desc))
-    log(f"users: {len(MOCK_USERS)} (mock, รหัสผ่าน password123) | app_config: {len(APP_CONFIG)}")
+    log(f"roles: {len(ROLES)} | users: {len(MOCK_USERS)} (mock, รหัสผ่าน password123) | app_config: {len(APP_CONFIG)}")
 
 # ---------------------------------------------------------------------------
 # 5. Risk Engine — ระดับโครงการ (§10)
@@ -832,6 +861,15 @@ def validate(cur):
     n_ar = cur.execute("""SELECT COUNT(*) FROM annual_risk_results
         WHERE run_id=(SELECT MAX(run_id) FROM assessment_runs)""").fetchone()[0]
     check(f"7) annual risk ครบ {n_sets} ชุด × {n_af} factors = {n_sets*n_af}", n_ar == n_sets * n_af, f"ได้ {n_ar}")
+
+    # roles ครบตาม roles.md + admin และ user ที่ role เป็นแบบ scope ตำบลต้องมี subdistrict_id
+    n_roles = cur.execute("SELECT COUNT(*) FROM roles").fetchone()[0]
+    n_scoped_null = cur.execute("""SELECT COUNT(*) FROM users
+        WHERE role IN ('local_executive','project_auditor','risk_analyst')
+        AND subdistrict_id IS NULL""").fetchone()[0]
+    check("8) roles ครบ 6 role (roles.md + admin) และ user แบบ scope ตำบลมี subdistrict_id ครบ",
+          n_roles == len(ROLES) and n_scoped_null == 0,
+          f"roles={n_roles}, scoped-user ไม่มีตำบล={n_scoped_null}")
 
     return ok
 

@@ -67,10 +67,12 @@ Interface:
 - returned token is the username
 - authenticated requests must send `X-Username: <token>`
 
-Scope invariant:
-- `municipality_user` sees only its own `subdistrict_id`
-- `admin`, `auditor`, and `viewer` see every subdistrict
-- routers that return scoped data must call `scope_subdistrict_ids(conn, user)`
+Scope invariant (role นิยามใน `roles.md` — seed ลงตาราง `roles`; สิทธิ์บังคับที่ app layer):
+- `local_executive`, `project_auditor`, `risk_analyst` เห็นเฉพาะ `subdistrict_id` ของตัวเอง
+- `admin`, `regional_supervisor`, `public_user` เห็นทุกตำบล
+  (`public_user` เป็น read-only และไม่เห็นข้อมูลที่ถูกปิดไว้ เช่น `/audit/*`)
+- router ที่คืนข้อมูลระดับตำบลต้องเรียก `scope_subdistrict_ids(conn, user)` เสมอ
+- endpoint ที่จำกัดบทบาทใช้ `require_roles(...)` เช่น `/audit/assignments`
 
 This scope check is a backend responsibility. Frontend filters are UX only.
 

@@ -17,7 +17,7 @@
 | โครงสร้างฐานข้อมูล (ตาราง + เหตุผล) | `data_model_design.md`, `data_model_erd.mermaid` |
 | นิยามคอลัมน์ CSV ต้นทาง | `_schema_dictionary.md` |
 | ตรรกะให้คะแนนความเสี่ยง | `Risk Factor Design ระดับโครงการ.md`, `Risk Factor Design ระดับงบรายปี.md` |
-| บทบาทผู้ใช้ + flow การตรวจสอบ | `สรุป Flow การตรวจสอบคร่าวๆ.md`, `flow_*.pdf` |
+| บทบาทผู้ใช้ (roles) + สิทธิ์ | `roles.md` (source of truth), README §5 |
 | กติกา/คอนเวนชันสำหรับเขียนโค้ด | `CLAUDE.md` |
 
 ---
@@ -83,7 +83,7 @@ data_modelling/
 ฐานข้อมูล SQLite เดียว (`fraud_risk.db`) 15 ตาราง แบ่งเป็น 4 กลุ่ม:
 
 **Master data** — `subdistricts` (3 ตำบล), `vendors` (57 ราย), `projects` (97 โครงการ),
-`financial_statements` (337 บรรทัดงบการเงิน), `users` (6 mock users)
+`financial_statements` (337 บรรทัดงบการเงิน), `roles` (6 บทบาท ตาม `roles.md`), `users` (8 mock users)
 
 **Risk engine config** — `risk_factors` (8 ตัวชี้วัด), `app_config` (เกณฑ์แบ่งระดับความเสี่ยง)
 
@@ -113,14 +113,19 @@ data_modelling/
 
 ## 5. บทบาทผู้ใช้ (roles) และ scope
 
+นิยาม role และสิทธิ์ทั้งหมดอยู่ใน **`roles.md`** (source of truth) — DB เก็บชื่อ/คำอธิบาย role
+ในตาราง `roles` ส่วนการบังคับสิทธิ์ทำที่ app layer (`require_roles(...)` ใน `src/auth.py`)
+
 mock users ทั้งหมดรหัสผ่านเดียวกัน: **`password123`**
 
 | username | role | เห็นอะไร |
 |---|---|---|
-| `admin` | admin | ทุกตำบล เปรียบเทียบข้ามตำบลได้ |
-| `thachang_user` / `pingkhong_user` / `yonok_user` | municipality_user | **เฉพาะตำบลของตัวเอง** |
-| `auditor1` | auditor | โครงการที่ได้รับมอบหมาย + เขียนรายงานผลตรวจ |
-| `viewer` | viewer | อ่านอย่างเดียว |
+| `admin` | admin | ทุกตำบล + ตั้งค่าระบบ (risk_factors, app_config, users) |
+| `supervisor1` | regional_supervisor | ทุกตำบล เปรียบเทียบข้ามตำบลได้ |
+| `thachang_user` / `pingkhong_user` / `yonok_user` | local_executive | **เฉพาะตำบลของตัวเอง** |
+| `auditor1` | project_auditor | เฉพาะตำบลของตัวเอง + มอบหมายงานตรวจสอบ |
+| `analyst1` | risk_analyst | เฉพาะตำบลของตัวเอง + รับงานที่ได้รับมอบหมาย + ส่งรายงานผลตรวจ |
+| `public1` | public_user | ทุกตำบล (read-only, **ไม่เห็นข้อมูลที่ถูกปิดไว้** เช่น `/audit/*`) |
 
 การจำกัด scope อยู่ที่ `src/auth.py` → `scope_subdistrict_ids()` ทุก endpoint ที่คืนข้อมูลตำบล
 ต้องเรียกใช้ฟังก์ชันนี้เสมอ
@@ -138,6 +143,7 @@ curl -X POST http://127.0.0.1:8000/auth/login \
 # ทุก endpoint ที่ต้อง auth ให้แนบ header X-Username (mock)
 curl http://127.0.0.1:8000/projects?risk_level=high -H "X-Username: admin"
 curl http://127.0.0.1:8000/risk/summary            -H "X-Username: thachang_user"
+curl http://127.0.0.1:8000/subdistricts            -H "X-Username: public1"   # ประชาชน: เห็นทุกตำบล
 ```
 
 > ⚠️ **Auth เป็น mock** (token = username, sha256 ไม่มี salt) เหมาะกับ demo เท่านั้น
