@@ -8,9 +8,10 @@ auth.py — MOCK authentication + role/scope guard
 ก่อนขึ้น production ต้องเปลี่ยนเป็น password hashing จริง (bcrypt/argon2) + JWT/session
 ดูรายละเอียดใน CLAUDE.md หัวข้อ "Auth (mock)"
 
-Scope rule (ตาม สรุป Flow การตรวจสอบคร่าวๆ.md):
-    - admin / auditor / viewer : เห็นได้ทุกตำบล
-    - municipality_user        : เห็นเฉพาะตำบลของตัวเอง (subdistrict_id ของ user)
+Scope rule (ตาม roles.md — สิทธิ์/scope บังคับที่ app layer):
+    - admin / regional_supervisor / public_user       : เห็นได้ทุกตำบล
+    - local_executive / project_auditor / risk_analyst : เห็นเฉพาะตำบลของตัวเอง
+                                                         (subdistrict_id ของ user)
 """
 import hashlib
 import sqlite3
@@ -18,6 +19,9 @@ import sqlite3
 from fastapi import Depends, Header, HTTPException, status
 
 from .database import get_db
+
+# role ที่เห็นเฉพาะตำบลของตัวเอง (ตาม roles.md) — role อื่น (admin/regional_supervisor/public_user) เห็นทุกตำบล
+SCOPED_ROLES = {"local_executive", "project_auditor", "risk_analyst"}
 
 
 def sha256(s: str) -> str:
@@ -79,6 +83,6 @@ def scope_subdistrict_ids(conn: sqlite3.Connection, user: dict) -> list[int] | N
     คืน list ของ subdistrict_id ที่ user เห็นได้.
     None = เห็นได้ทุกตำบล (ไม่ต้อง filter)
     """
-    if user["role"] == "municipality_user":
+    if user["role"] in SCOPED_ROLES:
         return [user["subdistrict_id"]] if user["subdistrict_id"] is not None else []
-    return None  # admin / auditor / viewer
+    return None  # admin / regional_supervisor / public_user

@@ -38,7 +38,9 @@ pytest -q                              # smoke test
 - ชื่อคอลัมน์ DB/CSV เป็น **snake_case อังกฤษ** เสมอ (ดู `_schema_dictionary.md`)
 - **ทุก query ที่คืนข้อมูลระดับตำบลต้องผ่าน scope guard** — เรียก
   `scope_subdistrict_ids(conn, user)` แล้ว filter `subdistrict_id`
-  `municipality_user` เห็นเฉพาะตำบลตัวเอง; `admin/auditor/viewer` เห็นทุกตำบล
+  role ตาม `roles.md` (seed ลงตาราง `roles`): `local_executive/project_auditor/risk_analyst`
+  เห็นเฉพาะตำบลตัวเอง; `admin/regional_supervisor/public_user` เห็นทุกตำบล
+  สิทธิ์ราย endpoint บังคับที่ app layer ด้วย `require_roles(...)`
 - ใช้ **parameterized query** เท่านั้น (`?` placeholder) ห้าม f-string ค่าที่มาจาก user
   (การ interpolate ที่มีตอนนี้เป็นแค่จำนวน placeholder `?` ไม่ใช่ค่า)
 - router ใหม่: สร้างใน `src/routers/`, ตั้ง `APIRouter(prefix=..., tags=[...])`,

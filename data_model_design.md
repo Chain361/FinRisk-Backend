@@ -25,6 +25,7 @@ erDiagram
     subdistricts ||--o{ financial_statements : has
     subdistricts ||--o{ annual_risk_results : "risk รายปี"
     subdistricts ||--o{ users : scopes
+    roles ||--o{ users : "role_code"
     vendors ||--o{ projects : wins
     projects ||--o{ project_risk_results : "ผลเช็ค factor"
     projects ||--|| project_risk_scores : "คะแนนรวม"
@@ -90,21 +91,39 @@ CREATE TABLE vendors (
 
 เหตุผล: ข้อมูลจริงมีผู้ชนะซ้ำสูง (ที เอ็น ดับเบิ้ลยูฯ ชนะ 12 โครงการ, พีเอพีฯ 10 โครงการ) → เป็นวัตถุดิบ risk factor กลุ่มผู้รับจ้างซ้ำในอนาคต dedup ด้วย `name` (TIN เชื่อไม่ได้ ดู §9.3)
 
-### 3.3 `users` + roles
+### 3.3 `roles` + `users`
 
 ```sql
+-- บทบาทผู้ใช้ (ที่มา: roles.md — source of truth; สิทธิ์/scope บังคับที่ app layer ดู §12)
+CREATE TABLE roles (
+    role_code       TEXT PRIMARY KEY,
+    display_name_th TEXT NOT NULL,
+    description     TEXT
+);
+
 CREATE TABLE users (
     user_id        INTEGER PRIMARY KEY AUTOINCREMENT,
     username       TEXT NOT NULL UNIQUE,
     password_hash  TEXT NOT NULL,               -- mock login ได้ตาม scope
     display_name   TEXT,
-    role           TEXT NOT NULL CHECK (role IN ('admin','municipality_user','auditor','viewer')),
-    subdistrict_id INTEGER REFERENCES subdistricts(subdistrict_id),  -- NULL สำหรับ admin/viewer
+    role           TEXT NOT NULL REFERENCES roles(role_code),
+    subdistrict_id INTEGER REFERENCES subdistricts(subdistrict_id),  -- NULL สำหรับ role ที่เห็นทุกตำบล
     created_at     TEXT DEFAULT (datetime('now'))
 );
 ```
 
-Role ตรงกับไฟล์ "สรุป Flow การตรวจสอบคร่าวๆ.md": `municipality_user` (ผู้บริหาร อบต. + ผู้ตรวจสอบโครงการ — เห็นเฉพาะตำบลตัวเอง), `auditor` (เห็นเฉพาะงานที่ได้รับมอบหมาย), `admin` (ทุกตำบล + ตั้งค่า risk factors), `viewer` (อ่านอย่างเดียว)
+Role ทั้ง 6 (5 role จาก `roles.md` + `admin` สำหรับดูแลระบบ):
+
+| role_code | ชื่อแสดงผล | ขอบเขตข้อมูล |
+|---|---|---|
+| `admin` | ผู้ดูแลระบบ | ทุกตำบล + ตั้งค่า risk_factors / app_config / users |
+| `regional_supervisor` | ผู้บริหาร/ผู้กำกับดูแลระดับอำเภอ/จังหวัด | ทุกตำบล |
+| `local_executive` | ผู้บริหาร (นายก อบต. / ปลัด) | เฉพาะตำบลของตนเอง |
+| `project_auditor` | ผู้ตรวจสอบโครงการ | เฉพาะตำบลของตนเอง |
+| `risk_analyst` | นักวิเคราะห์ข้อมูล / ทีมตรวจสอบภายใน | เฉพาะตำบลของตนเอง (งานตรวจกรองตาม assignment) |
+| `public_user` | ประชาชนทั่วไป | ทุกตำบล แต่ไม่เห็นข้อมูลที่ถูกปิดไว้ และไม่มีสิทธิ์แก้ไข |
+
+รายละเอียดสิทธิ์ (permission) ของแต่ละ role ดู `roles.md` — เก็บเฉพาะชื่อ/คำอธิบาย role ในตาราง `roles` ส่วนการบังคับสิทธิ์ทำที่ app layer (`require_roles(...)` ใน `src/auth.py`) ตาม §12
 
 ---
 
@@ -302,8 +321,8 @@ CREATE TABLE app_config (
 CREATE TABLE audit_assignments (
     assignment_id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id    TEXT NOT NULL REFERENCES projects(project_id),
-    assigned_to   INTEGER NOT NULL REFERENCES users(user_id),   -- auditor
-    assigned_by   INTEGER NOT NULL REFERENCES users(user_id),   -- municipality_user (ผู้ตรวจสอบโครงการ)
+    assigned_to   INTEGER NOT NULL REFERENCES users(user_id),   -- risk_analyst (นักวิเคราะห์)
+    assigned_by   INTEGER NOT NULL REFERENCES users(user_id),   -- project_auditor (ผู้ตรวจสอบโครงการ)
     priority      TEXT CHECK (priority IN ('low','medium','high')),  -- จัดลำดับตาม risk level
     status        TEXT NOT NULL DEFAULT 'assigned' CHECK (status IN ('assigned','in_progress','submitted','reviewed')),
     due_date      TEXT,
@@ -615,14 +634,18 @@ WHERE subdistrict_id = :sid AND fiscal_year = :fy
 
 ## 12. Permission ที่ App Layer (SQLite ไม่มี row-level security)
 
-ทุก query ต้องผ่าน filter กลางตาม role:
+Role และสิทธิ์นิยามใน `roles.md` (source of truth) — DB เก็บเฉพาะตาราง `roles` (ชื่อ + คำอธิบาย)
+การบังคับสิทธิ์ทำที่ app layer: scope ตำบลผ่าน `scope_subdistrict_ids(...)` และสิทธิ์ราย endpoint
+ผ่าน `require_roles(...)` ใน `src/auth.py` — ทุก query ต้องผ่าน filter กลางตาม role:
 
-| Role | Filter บังคับ |
-|---|---|
-| admin | ไม่ filter (เห็นทุกตำบล) + สิทธิ์แก้ risk_factors, app_config, users |
-| municipality_user | `WHERE subdistrict_id = :user_subdistrict` ทุกตารางที่มี subdistrict_id + สร้าง audit_assignments ได้ |
-| auditor | `WHERE project_id IN (SELECT project_id FROM audit_assignments WHERE assigned_to = :user_id)` + เขียน audit_reports/auditor_feedback ได้ |
-| viewer | อ่านได้เฉพาะ views (v_*) — read-only |
+| Role | ขอบเขตข้อมูล | Filter บังคับ | สิทธิ์เด่น (ตาม roles.md) |
+|---|---|---|---|
+| admin | ทุกตำบล | ไม่ filter | ทุกสิทธิ์ + แก้ risk_factors, app_config, users |
+| regional_supervisor | ทุกตำบล | ไม่ filter | ดู dashboard ทั้งหมด, ดูทุกโครงการ, กรองตามตำบล, ดูข้อมูลการตรวจสอบสาธารณะ |
+| local_executive | เฉพาะตำบลตนเอง | `WHERE subdistrict_id = :user_subdistrict` | ดู dashboard + โครงการของตำบลตนเอง, ดูข้อมูลการตรวจสอบสาธารณะ |
+| project_auditor | เฉพาะตำบลตนเอง | `WHERE subdistrict_id = :user_subdistrict` | มอบหมายงานตรวจสอบ (audit_assignments), ดูรายงานของทีม, ใช้ chatbot |
+| risk_analyst | เฉพาะตำบลตนเอง | ตำบลตนเอง + `/audit/assignments` กรอง `assigned_to = :user_id` | ดูโครงการที่ได้รับมอบหมาย, ส่งรายงานผลตรวจ (audit_reports), ใช้ chatbot |
+| public_user | ทุกตำบล | ไม่ filter แต่ **ไม่เห็นข้อมูลที่ถูกปิดไว้** (เช่น /audit/*) — read-only | ดู dashboard, ดูโครงการ, กรองตามตำบล |
 
 แนะนำ implement เป็น middleware/repository layer เดียว ห้าม query ตารางตรงจาก UI
 
@@ -638,7 +661,7 @@ WHERE subdistrict_id = :sid AND fiscal_year = :fy
 | F4 Chatbot + references | — ตัดออกจาก scope รอบนี้ (§7) |
 | F5 Legal linkage | — ตัดออกจาก scope รอบนี้ (§7) |
 | F6 Feedback (sentiment ตัดออก — ใช้ risk assessment ในฟอร์มแทน) | auditor_feedback, audit_reports |
-| F7 Role-based access | users, §12 |
+| F7 Role-based access | users, roles, §12 (นิยาม role ดู roles.md) |
 | Responsible AI | computable flag, assessment_runs (audit trail), evidence_text ทุก factor |
 | Risk factor รายปี Y1–Y3 | risk_factors(scope='annual'), annual_risk_results, v_annual_risk, §11 |
 
