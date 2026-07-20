@@ -410,7 +410,11 @@ MOCK_USERS = [
     ("pingkhong_user", "นายก/ปลัด ทต.ปิงโค้ง", "local_executive", "ปิงโค้ง"),
     ("yonok_user", "นายก/ปลัด ทต.โยนก", "local_executive", "โยนก"),
     ("auditor1", "ผู้ตรวจสอบโครงการ ทต.ท่าช้าง", "project_auditor", "ท่าช้าง"),
+    ("auditor2", "ผู้ตรวจสอบโครงการ ทต.ปิงโค้ง", "project_auditor", "ปิงโค้ง"),
+    ("auditor3", "ผู้ตรวจสอบโครงการ ทต.โยนก",   "project_auditor", "โยนก"),
     ("analyst1", "นักวิเคราะห์ความเสี่ยง ทต.ท่าช้าง", "risk_analyst", "ท่าช้าง"),
+    ("analyst2", "นักวิเคราะห์ความเสี่ยง ทต.ปิงโค้ง", "risk_analyst", "ปิงโค้ง"),
+    ("analyst3", "นักวิเคราะห์ความเสี่ยง ทต.โยนก",   "risk_analyst", "โยนก"),
     ("public1", "ประชาชนทั่วไป", "public_user", None),
 ]
 
