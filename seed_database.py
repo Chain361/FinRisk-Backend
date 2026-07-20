@@ -128,9 +128,11 @@ CREATE TABLE risk_factors (
     name_th       TEXT NOT NULL,
     description   TEXT NOT NULL,
     formula       TEXT NOT NULL,
-    params_json   TEXT NOT NULL DEFAULT '{}',
+    params_json   TEXT NOT NULL DEFAULT '{}',       -- threshold + likelihood_map (โอกาส 1–5)
     weight        REAL NOT NULL DEFAULT 1.0,
     severity      TEXT NOT NULL DEFAULT 'medium' CHECK (severity IN ('low','medium','high')),
+    impact_level  INTEGER NOT NULL DEFAULT 3 CHECK (impact_level BETWEEN 1 AND 5),  -- ผลกระทบคงที่ต่อ factor (5×5 matrix)
+    legal_ref     TEXT,                              -- ฐานกฎหมาย/ระเบียบอ้างอิง (⚠️ ให้ฝ่ายกฎหมายยืนยันเลขมาตรา/ข้อ)
     data_requirement TEXT,
     enabled       INTEGER NOT NULL DEFAULT 1,
     created_at    TEXT DEFAULT (datetime('now'))
@@ -154,6 +156,10 @@ CREATE TABLE project_risk_results (
     observed_value REAL,
     threshold_used TEXT,
     evidence_text TEXT,
+    likelihood    INTEGER,       -- โอกาส 1–5 (NULL เมื่อ computable=0)
+    impact        INTEGER,       -- ผลกระทบ 1–5 (สำเนาจาก risk_factors.impact_level ณ ตอนรัน)
+    matrix_score  INTEGER,       -- likelihood × impact (1–25)
+    risk_band     TEXT CHECK (risk_band IN ('ต่ำ','ปานกลาง','สูง','สูงมาก')),  -- ระดับตาม 5×5 matrix
     UNIQUE(run_id, project_id, factor_code)
 );
 CREATE INDEX idx_prr_project ON project_risk_results(project_id, run_id);
@@ -164,6 +170,11 @@ CREATE TABLE project_risk_scores (
     project_id  TEXT NOT NULL REFERENCES projects(project_id),
     risk_score  REAL NOT NULL,
     risk_level  TEXT NOT NULL CHECK (risk_level IN ('low','medium','high')),
+    -- ระดับรวมแบบ 5×5: โอกาสรวม (โอกาสสูงสุด + โบนัสจำนวนสัญญาณที่ยืนยันกัน) × ผลกระทบสูงสุด
+    matrix_likelihood INTEGER,   -- โอกาสรวมของโครงการ 1–5
+    matrix_impact     INTEGER,   -- ผลกระทบสูงสุดของ factor ที่ triggered 1–5
+    matrix_score      INTEGER,   -- matrix_likelihood × matrix_impact (1–25)
+    matrix_level TEXT CHECK (matrix_level IN ('ต่ำ','ปานกลาง','สูง','สูงมาก')),
     factors_triggered INTEGER NOT NULL,
     factors_not_computable INTEGER NOT NULL DEFAULT 0,
     summary_text TEXT,
@@ -182,6 +193,10 @@ CREATE TABLE annual_risk_results (
     observed_value REAL,
     threshold_used TEXT,
     evidence_text TEXT,
+    likelihood    INTEGER,       -- โอกาส 1–5 (NULL เมื่อ computable=0)
+    impact        INTEGER,       -- ผลกระทบ 1–5 (สำเนาจาก risk_factors.impact_level ณ ตอนรัน)
+    matrix_score  INTEGER,       -- likelihood × impact (1–25)
+    risk_band     TEXT CHECK (risk_band IN ('ต่ำ','ปานกลาง','สูง','สูงมาก')),  -- ระดับตาม 5×5 matrix
     UNIQUE(run_id, subdistrict_id, fiscal_year, factor_code)
 );
 
@@ -239,9 +254,10 @@ GROUP BY s.name_th, p.budget_year;
 
 CREATE VIEW v_project_risk_detail AS
 SELECT p.project_id, p.project_name, s.name_th AS subdistrict, p.budget_year,
-       prs.risk_score, prs.risk_level, prs.summary_text,
-       prr.factor_code, rf.name_th AS factor_name,
-       prr.triggered, prr.computable, prr.observed_value, prr.evidence_text
+       prs.risk_score, prs.risk_level, prs.matrix_level, prs.summary_text,
+       prr.factor_code, rf.name_th AS factor_name, rf.legal_ref,
+       prr.triggered, prr.computable, prr.observed_value, prr.threshold_used, prr.evidence_text,
+       prr.likelihood, prr.impact, prr.matrix_score, prr.risk_band
 FROM projects p
 JOIN subdistricts s ON s.subdistrict_id = p.subdistrict_id
 LEFT JOIN project_risk_scores prs ON prs.project_id = p.project_id
@@ -258,9 +274,10 @@ WHERE f.detail_level IN ('subtotal','total') AND f.unit = 'บาท';
 
 CREATE VIEW v_annual_risk AS
 SELECT s.name_th AS subdistrict, ar.fiscal_year,
-       ar.factor_code, rf.name_th AS factor_name, rf.severity,
+       ar.factor_code, rf.name_th AS factor_name, rf.severity, rf.legal_ref,
        ar.risk_level, ar.triggered, ar.computable,
-       ar.observed_value, ar.evidence_text
+       ar.observed_value, ar.threshold_used, ar.evidence_text,
+       ar.likelihood, ar.impact, ar.matrix_score, ar.risk_band
 FROM annual_risk_results ar
 JOIN subdistricts s ON s.subdistrict_id = ar.subdistrict_id
 JOIN risk_factors rf ON rf.factor_code = ar.factor_code
@@ -273,42 +290,65 @@ WHERE ar.run_id = (SELECT MAX(run_id) FROM assessment_runs);
 
 RISK_FACTORS = [
     # --- ระดับโครงการ A1–F1 ---
+    # หมายเหตุ 5×5: impact_level = ผลกระทบคงที่ต่อ factor (1–5); likelihood_map = ช่วงค่าที่วัดได้ → โอกาส 1–5
+    # (ช่วงนิยามแบบ lo ≤ ค่า < hi; ใช้เฉพาะเมื่อ triggered — ถ้าไม่ triggered แต่ computable โอกาส = 1)
     dict(factor_code="A1", scope="project", name_th="ส่วนลดผิดปกติ",
          description="ส่วนลดจากราคากลางสูงผิดปกติ (>15%) อาจสะท้อนการประมูลต่ำผิดปกติเพื่อชนะงานแล้วลดคุณภาพ/เบิกเพิ่มภายหลัง",
          formula="(reference_price - contract_value) / reference_price > discount_pct_min",
-         params_json=json.dumps({"discount_pct_min": 0.15}),
-         weight=1.0, severity="medium",
+         params_json=json.dumps({"discount_pct_min": 0.15,
+             "likelihood_map": [{"lo": 0.15, "hi": 0.25, "L": 3},
+                                {"lo": 0.25, "hi": 0.35, "L": 4},
+                                {"lo": 0.35, "hi": 9.99, "L": 5}]}, ensure_ascii=False),
+         weight=1.0, severity="medium", impact_level=3,
+         legal_ref="พ.ร.บ.การจัดซื้อจัดจ้างและการบริหารพัสดุภาครัฐ พ.ศ. 2560 (หลักคุ้มค่า/โปร่งใส) + หลักเกณฑ์การคำนวณราคากลาง",
          data_requirement="reference_price, contract_value"),
     dict(factor_code="A2", scope="project", name_th="ส่วนลดน้อยผิดปกติ",
          description="ชนะที่ 99–100% ของราคากลาง อาจสะท้อนการล็อกสเปกหรือฮั้วประมูล",
          formula="price_ratio BETWEEN ratio_min AND ratio_max",
-         params_json=json.dumps({"ratio_min": 0.99, "ratio_max": 1.00}),
-         weight=1.0, severity="medium",
+         params_json=json.dumps({"ratio_min": 0.99, "ratio_max": 1.00,
+             "likelihood_map": [{"lo": 0.99, "hi": 0.9999, "L": 2},
+                                {"lo": 0.9999, "hi": 1.0001, "L": 3}]}, ensure_ascii=False),
+         weight=1.0, severity="high", impact_level=4,
+         legal_ref="พ.ร.บ.จัดซื้อจัดจ้างฯ 2560 (แข่งขันอย่างเป็นธรรม) + บทห้ามการสมยอมราคา/ฮั้วประมูล",
          data_requirement="price_ratio (contract_value, reference_price)"),
     dict(factor_code="A3", scope="project", name_th="ราคากลางชนงบพอดี",
          description="ราคากลางใกล้งบประมาณมาก (<0.5%) ซ้ำหลายโครงการในหน่วยงานเดียว อาจสะท้อนการตั้งราคากลางตามงบแทนการสืบราคาจริง",
          formula="ABS(reference_price - budget_amount)/budget_amount < gap_pct_max AND count in group >= min_occurrences (group = dept_name, fallback = subdistrict เมื่อ dept_name ว่าง)",
-         params_json=json.dumps({"gap_pct_max": 0.005, "min_occurrences": 2}),
-         weight=1.0, severity="medium",
+         params_json=json.dumps({"gap_pct_max": 0.005, "min_occurrences": 2,
+             "likelihood_by": "group_count",
+             "likelihood_map": [{"lo": 2, "hi": 3, "L": 2},
+                                {"lo": 3, "hi": 9999, "L": 3}]}, ensure_ascii=False),
+         weight=1.0, severity="medium", impact_level=3,
+         legal_ref="พ.ร.บ.จัดซื้อจัดจ้างฯ 2560 + หลักเกณฑ์ราคากลาง (ต้องสืบราคาตามจริง ไม่ตั้งตามงบ)",
          data_requirement="budget_amount, reference_price, dept_name (fallback: subdistrict)"),
     dict(factor_code="D1", scope="project", name_th="วงเงินหวุดหวิดใต้เกณฑ์เฉพาะเจาะจง",
-         description="งบประมาณ 450,000–499,999 บาท หวุดหวิดใต้เพดานวิธีเฉพาะเจาะจง 500,000 อาจสะท้อนการซอยงบเลี่ยงการแข่งขัน",
-         formula="budget_amount BETWEEN band_low AND band_high",
-         params_json=json.dumps({"band_low": 450000, "band_high": 499999}),
-         weight=1.0, severity="high",
-         data_requirement="budget_amount"),
+         description="วิธีเฉพาะเจาะจง + งบประมาณ 450,000–499,999 บาท หวุดหวิดใต้เพดานวิธีเฉพาะเจาะจง 500,000 อาจสะท้อนการซอยงบเลี่ยงการแข่งขัน",
+         formula="purchase_method = 'เฉพาะเจาะจง' AND budget_amount BETWEEN band_low AND band_high",
+         params_json=json.dumps({"band_low": 450000, "band_high": 499999,
+             "purchase_method": "เฉพาะเจาะจง",
+             "likelihood_map": [{"lo": 450000, "hi": 475000, "L": 3},
+                                {"lo": 475000, "hi": 500000, "L": 4}]}, ensure_ascii=False),
+         weight=1.0, severity="medium", impact_level=4,
+         legal_ref="ระเบียบกระทรวงการคลังว่าด้วยการจัดซื้อจัดจ้างฯ พ.ศ. 2560 (ห้ามแบ่งซื้อแบ่งจ้างเพื่อเลี่ยงวิธี) + เพดานวงเงินวิธีเฉพาะเจาะจง 500,000 บาท",
+         data_requirement="purchase_method, budget_amount"),
     dict(factor_code="F1", scope="project", name_th="จัดจ้างกระจุกตัวท้ายปีงบ",
-         description="ทำรายการเดือน ส.ค.–ก.ย. (ท้ายปีงบ) อาจสะท้อนการเร่งใช้งบโดยไม่วางแผน",
-         formula="MONTH(transaction_date) IN months",
-         params_json=json.dumps({"months": [8, 9]}),
-         weight=1.0, severity="low",
-         data_requirement="transaction_date (ปิงโค้งไม่มี → computable=0)"),
+         description="ทำรายการเดือน ส.ค.–ก.ย. (ท้ายปีงบ) อาจสะท้อนการเร่งใช้งบโดยไม่วางแผน (ใช้ transaction_date, fallback = announce_date)",
+         formula="MONTH(COALESCE(transaction_date, announce_date)) IN months",
+         params_json=json.dumps({"months": [8, 9],
+             "likelihood_map": [{"lo": 8, "hi": 9, "L": 2},
+                                {"lo": 9, "hi": 10, "L": 3}]}, ensure_ascii=False),
+         weight=1.0, severity="medium", impact_level=2,
+         legal_ref="พ.ร.บ.จัดซื้อจัดจ้างฯ 2560 (การจัดทำแผนการจัดซื้อจัดจ้างประจำปี) + หลักธรรมาภิบาล",
+         data_requirement="transaction_date หรือ announce_date (ปิงโค้งไม่มีทั้งคู่ → computable=0)"),
     # --- ระดับงบรายปี Y1–Y3 (§11.3) ---
     dict(factor_code="Y1", scope="annual", name_th="อัตราการพึ่งพาตนเองทางการคลัง",
          description="(รายได้จัดเก็บเอง + รายได้รัฐจัดเก็บให้) / (รายได้รวม − เงินกู้) × 100 — ต่ำ = พึ่งพาเงินอุดหนุนสูง เปราะบางทางการคลัง (เงินกู้ไม่มีในข้อมูล → ถือเป็น 0)",
          formula="own_and_shared_revenue / (total_revenue - loan) * 100",
          params_json=json.dumps({
              "low_min_pct": 55.0, "high_max_pct": 30.0,
+             "likelihood_map": [{"lo": 30.0, "hi": 55.0, "L": 3},
+                                {"lo": 15.0, "hi": 30.0, "L": 4},
+                                {"lo": -9999.0, "hi": 15.0, "L": 5}],
              "account_map": {
                  "own_and_shared_revenue": {
                      "statement_type": "งบแสดงผลการดำเนินงาน",
@@ -326,13 +366,17 @@ RISK_FACTORS = [
                      "statement_type": "งบแสดงผลการดำเนินงาน",
                      "items": ["รวมรายได้", "รายได้รวม (total_revenues)"]},
                  "loan": {"items": []}}}, ensure_ascii=False),
-         weight=1.0, severity="medium",
+         weight=1.0, severity="medium", impact_level=3,
+         legal_ref="พ.ร.บ.วินัยการเงินการคลังของรัฐ พ.ศ. 2561 + มาตรฐานการบริหารจัดการความเสี่ยงสำหรับหน่วยงานของรัฐ (กระทรวงการคลัง)",
          data_requirement="งบแสดงผลการดำเนินงาน รายตำบลรายปี"),
     dict(factor_code="Y2", scope="annual", name_th="ดุลการดำเนินงานประจำปี",
          description="(รายได้ − ค่าใช้จ่าย) / รายได้รวม × 100 — ติดลบ = ขาดดุล; ใช้ดุลรวมทั้งงบเป็น proxy (ข้อมูลไม่แยกรายการประจำ/ลงทุน)",
          formula="operating_balance / total_revenue * 100",
          params_json=json.dumps({
              "low_min_pct": 15.0, "high_max_pct": 0.0,
+             "likelihood_map": [{"lo": 0.0, "hi": 15.0, "L": 3},
+                                {"lo": -10.0, "hi": 0.0, "L": 4},
+                                {"lo": -9999.0, "hi": -10.0, "L": 5}],
              "account_map": {
                  "operating_balance": {
                      "statement_type": "งบแสดงผลการดำเนินงาน",
@@ -341,13 +385,17 @@ RISK_FACTORS = [
                  "total_revenue": {
                      "statement_type": "งบแสดงผลการดำเนินงาน",
                      "items": ["รวมรายได้", "รายได้รวม (total_revenues)"]}}}, ensure_ascii=False),
-         weight=1.0, severity="high",
+         weight=1.0, severity="high", impact_level=4,
+         legal_ref="พ.ร.บ.วินัยการเงินการคลังของรัฐ พ.ศ. 2561 (รักษาวินัยการคลัง ไม่ก่อภาระเกินฐานะ)",
          data_requirement="งบแสดงผลการดำเนินงาน รายตำบลรายปี"),
     dict(factor_code="Y3", scope="annual", name_th="Cash Coverage Ratio",
          description="เงินสดและรายการเทียบเท่า / (ภาระผูกพัน + หนี้สินหมุนเวียน) — ต่ำกว่า 1 เท่า = เงินสดไม่พอจ่ายหนี้ระยะสั้น (ภาระผูกพันไม่มีในข้อมูล → ถือเป็น 0)",
          formula="cash / (commitments + current_liabilities)",
          params_json=json.dumps({
              "low_min_ratio": 5.0, "high_max_ratio": 1.0,
+             "likelihood_map": [{"lo": 1.0, "hi": 5.0, "L": 3},
+                                {"lo": 0.5, "hi": 1.0, "L": 4},
+                                {"lo": -9999.0, "hi": 0.5, "L": 5}],
              "account_map": {
                  "cash": {
                      "statement_type": "งบแสดงฐานะการเงิน",
@@ -356,13 +404,18 @@ RISK_FACTORS = [
                      "statement_type": "งบแสดงฐานะการเงิน",
                      "items": ["รวมหนี้สินหมุนเวียน", "หนี้สินหมุนเวียนรวม"]},
                  "commitments": {"items": []}}}, ensure_ascii=False),
-         weight=1.0, severity="high",
+         weight=1.0, severity="high", impact_level=4,
+         legal_ref="พ.ร.บ.วินัยการเงินการคลังของรัฐ พ.ศ. 2561 + มาตรฐานการบัญชีภาครัฐ (การรักษาสภาพคล่อง)",
          data_requirement="งบแสดงฐานะการเงิน รายตำบลรายปี"),
 ]
 
 APP_CONFIG = [
     ("risk_level_medium_min", "30", "risk_score >= ค่านี้ → medium"),
     ("risk_level_high_min", "60", "risk_score > ค่านี้ → high"),
+    # เกณฑ์แบ่งระดับ 5×5 matrix (matrix_score = โอกาส × ผลกระทบ, 1–25) — ค่านโยบาย ปรับได้โดย admin
+    ("matrix_low_max", "5", "matrix_score <= ค่านี้ → ต่ำ"),
+    ("matrix_medium_max", "11", "matrix_score <= ค่านี้ → ปานกลาง"),
+    ("matrix_high_max", "19", "matrix_score <= ค่านี้ → สูง; มากกว่านี้ → สูงมาก"),
 ]
 
 # บทบาทตาม roles.md (5 role) + admin สำหรับดูแลระบบ — สิทธิ์/scope บังคับที่ app layer (src/auth.py)
@@ -563,10 +616,11 @@ def seed_financial(cur, fin_rows, sub_id):
 def seed_risk_factors(cur):
     for f in RISK_FACTORS:
         cur.execute("""INSERT INTO risk_factors (factor_code, scope, name_th, description,
-            formula, params_json, weight, severity, data_requirement)
-            VALUES (?,?,?,?,?,?,?,?,?)""", (
+            formula, params_json, weight, severity, impact_level, legal_ref, data_requirement)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)""", (
             f["factor_code"], f["scope"], f["name_th"], f["description"], f["formula"],
-            f["params_json"], f["weight"], f["severity"], f["data_requirement"]))
+            f["params_json"], f["weight"], f["severity"], f["impact_level"], f["legal_ref"],
+            f["data_requirement"]))
     log(f"risk_factors: {len(RISK_FACTORS)} factors (A1–F1 + Y1–Y3)")
 
 
@@ -585,12 +639,45 @@ def seed_users_config(cur, sub_id):
     log(f"roles: {len(ROLES)} | users: {len(MOCK_USERS)} (mock, รหัสผ่าน password123) | app_config: {len(APP_CONFIG)}")
 
 # ---------------------------------------------------------------------------
-# 5. Risk Engine — ระดับโครงการ (§10)
+# 5. Risk Engine — ระดับโครงการ (§10) + 5×5 matrix (โอกาส × ผลกระทบ)
 # ---------------------------------------------------------------------------
+
+def likelihood_from_map(value, lmap, triggered):
+    """map ค่าที่วัดได้ → โอกาส (1–5) ตามช่วงใน likelihood_map (lo ≤ ค่า < hi)
+    ถ้าไม่ triggered หรือค่าว่าง → โอกาส = 1 (ต่ำสุด)"""
+    if not triggered or value is None or not lmap:
+        return 1
+    for b in lmap:
+        if b["lo"] <= value < b["hi"]:
+            return int(b["L"])
+    return 1
+
+
+def load_matrix_bands(cur):
+    """อ่านเกณฑ์แบ่งระดับ 5×5 จาก app_config → คืนฟังก์ชัน band(matrix_score)"""
+    def cfg(k):
+        return int(cur.execute("SELECT value FROM app_config WHERE key=?", (k,)).fetchone()[0])
+    low_max, med_max, high_max = cfg("matrix_low_max"), cfg("matrix_medium_max"), cfg("matrix_high_max")
+
+    def band(score):
+        if score is None:
+            return None
+        if score <= low_max:
+            return "ต่ำ"
+        if score <= med_max:
+            return "ปานกลาง"
+        if score <= high_max:
+            return "สูง"
+        return "สูงมาก"
+    return band
+
 
 def run_project_engine(cur, run_id):
     factors = {code: json.loads(pj) for code, pj in cur.execute(
         "SELECT factor_code, params_json FROM risk_factors WHERE scope='project' AND enabled=1")}
+    impacts = {code: imp for code, imp in cur.execute(
+        "SELECT factor_code, impact_level FROM risk_factors WHERE scope='project' AND enabled=1")}
+    band = load_matrix_bands(cur)
     cur.execute("""SELECT p.*, s.name_th AS sub_name FROM projects p
                    JOIN subdistricts s ON s.subdistrict_id = p.subdistrict_id""")
     cols = [c[0] for c in cur.description]
@@ -607,12 +694,21 @@ def run_project_engine(cur, run_id):
                 key = p["dept_name"] or f"ตำบล:{p['sub_name']}"
                 group_hits[key] = group_hits.get(key, 0) + 1
 
-    def emit(pid, code, triggered, computable, observed, params, evidence):
+    def emit(pid, code, triggered, computable, observed, params, evidence, likelihood=None):
+        # 5×5: computable=0 → โอกาส/ผลกระทบ/matrix = NULL; ไม่ triggered แต่ computable → โอกาส=1
+        if not computable:
+            L = imp = ms = rb = None
+        else:
+            L = likelihood if (triggered and likelihood is not None) else 1
+            imp = impacts[code]
+            ms = L * imp
+            rb = band(ms)
         cur.execute("""INSERT INTO project_risk_results
             (run_id, project_id, factor_code, triggered, computable, observed_value,
-             threshold_used, evidence_text) VALUES (?,?,?,?,?,?,?,?)""",
+             threshold_used, evidence_text, likelihood, impact, matrix_score, risk_band)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (run_id, pid, code, int(triggered), int(computable), observed,
-                     json.dumps(params, ensure_ascii=False), evidence))
+                     json.dumps(params, ensure_ascii=False), evidence, L, imp, ms, rb))
 
     for p in projects:
         pid = p["project_id"]
@@ -625,7 +721,8 @@ def run_project_engine(cur, run_id):
                 disc = (rp - cv) / rp
                 trig = disc > th
                 emit(pid, "A1", trig, 1, round(disc, 4), factors["A1"],
-                     f"ส่วนลด {disc*100:.1f}% " + (f"เกินเกณฑ์ {th*100:.0f}%" if trig else f"ไม่เกินเกณฑ์ {th*100:.0f}%"))
+                     f"ส่วนลด {disc*100:.1f}% " + (f"เกินเกณฑ์ {th*100:.0f}%" if trig else f"ไม่เกินเกณฑ์ {th*100:.0f}%"),
+                     likelihood_from_map(disc, factors["A1"].get("likelihood_map"), trig))
             else:
                 emit(pid, "A1", 0, 0, None, factors["A1"], "ประเมินไม่ได้: ไม่มีราคากลางหรือวงเงินสัญญา")
 
@@ -636,7 +733,8 @@ def run_project_engine(cur, run_id):
             if ratio is not None:
                 trig = lo <= ratio <= hi
                 emit(pid, "A2", trig, 1, ratio, factors["A2"],
-                     f"ราคาสัญญา = {ratio*100:.2f}% ของราคากลาง" + (f" อยู่ช่วง {lo*100:.0f}–{hi*100:.0f}% (ส่วนลดน้อยผิดปกติ)" if trig else ""))
+                     f"ราคาสัญญา = {ratio*100:.2f}% ของราคากลาง" + (f" อยู่ช่วง {lo*100:.0f}–{hi*100:.0f}% (ส่วนลดน้อยผิดปกติ)" if trig else ""),
+                     likelihood_from_map(ratio, factors["A2"].get("likelihood_map"), trig))
             else:
                 emit(pid, "A2", 0, 0, None, factors["A2"], "ประเมินไม่ได้: price_ratio ว่าง (ราคากลาง/สัญญาเป็น 0 หรือไม่มี)")
 
@@ -645,35 +743,50 @@ def run_project_engine(cur, run_id):
             if ba and rp:
                 gap = abs(rp - ba) / ba
                 key = p["dept_name"] or f"ตำบล:{p['sub_name']}"
-                trig = gap < gap_max and group_hits.get(key, 0) >= min_occ
+                cnt = group_hits.get(key, 0)
+                trig = gap < gap_max and cnt >= min_occ
                 scope_txt = p["dept_name"] or f"ตำบล{p['sub_name']} (ไม่มีชื่อหน่วยงาน)"
                 emit(pid, "A3", trig, 1, round(gap, 6), factors["A3"],
                      f"ราคากลางห่างงบ {gap*100:.2f}%" +
-                     (f" และพบซ้ำ {group_hits.get(key)} โครงการใน {scope_txt}" if trig else ""))
+                     (f" และพบซ้ำ {cnt} โครงการใน {scope_txt}" if trig else ""),
+                     likelihood_from_map(cnt, factors["A3"].get("likelihood_map"), trig))
             else:
                 emit(pid, "A3", 0, 0, None, factors["A3"], "ประเมินไม่ได้: ไม่มีงบประมาณหรือราคากลาง")
 
-        # D1: วงเงินหวุดหวิดใต้เกณฑ์เฉพาะเจาะจง
+        # D1: วิธีเฉพาะเจาะจง + วงเงินหวุดหวิดใต้เกณฑ์ (ตามสเปก: ต้องเป็นวิธีเฉพาะเจาะจงด้วย)
         if "D1" in factors:
             lo, hi = factors["D1"]["band_low"], factors["D1"]["band_high"]
-            if ba is not None:
-                trig = lo <= ba <= hi
-                emit(pid, "D1", trig, 1, ba, factors["D1"],
-                     f"งบประมาณ {ba:,.0f} บาท" + (f" อยู่ช่วง {lo:,}–{hi:,} (หวุดหวิดใต้เพดาน 500,000)" if trig else ""))
+            pm_req = factors["D1"].get("purchase_method", "เฉพาะเจาะจง")
+            pm = p["purchase_method"]
+            if ba is not None and pm is not None:
+                is_specific = pm == pm_req
+                in_band = lo <= ba <= hi
+                trig = is_specific and in_band
+                if trig:
+                    ev = f"วิธี{pm} + งบประมาณ {ba:,.0f} บาท อยู่ช่วง {lo:,}–{hi:,} (หวุดหวิดใต้เพดาน 500,000)"
+                elif in_band and not is_specific:
+                    ev = f"งบประมาณ {ba:,.0f} บาท อยู่ในช่วงเสี่ยง แต่เป็นวิธี{pm} (ไม่ใช่เฉพาะเจาะจง) จึงไม่เข้าเงื่อนไข"
+                else:
+                    ev = f"วิธี{pm} + งบประมาณ {ba:,.0f} บาท (นอกช่วง {lo:,}–{hi:,})"
+                emit(pid, "D1", trig, 1, ba, factors["D1"], ev,
+                     likelihood_from_map(ba, factors["D1"].get("likelihood_map"), trig))
             else:
-                emit(pid, "D1", 0, 0, None, factors["D1"], "ประเมินไม่ได้: ไม่มีงบประมาณ")
+                miss = "งบประมาณ" if ba is None else "วิธีจัดซื้อจัดจ้าง"
+                emit(pid, "D1", 0, 0, None, factors["D1"], f"ประเมินไม่ได้: ไม่มี{miss}")
 
-        # F1: เดือน ส.ค.–ก.ย.
+        # F1: เดือน ส.ค.–ก.ย. (ใช้ transaction_date, fallback = announce_date ตามสเปก)
         if "F1" in factors:
             months = factors["F1"]["months"]
-            td = p["transaction_date"]
-            if td:
-                m = int(td[5:7])
+            dt = p["transaction_date"] or p["announce_date"]
+            src = "วันทำรายการ" if p["transaction_date"] else "วันประกาศ"
+            if dt:
+                m = int(dt[5:7])
                 trig = m in months
                 emit(pid, "F1", trig, 1, m, factors["F1"],
-                     f"ทำรายการเดือน {m}" + (" (ท้ายปีงบ ส.ค.–ก.ย.)" if trig else ""))
+                     f"{src}เดือน {m}" + (" (ท้ายปีงบ ส.ค.–ก.ย.)" if trig else ""),
+                     likelihood_from_map(m, factors["F1"].get("likelihood_map"), trig))
             else:
-                emit(pid, "F1", 0, 0, None, factors["F1"], "ประเมินไม่ได้: ไม่มีวันที่ทำรายการ")
+                emit(pid, "F1", 0, 0, None, factors["F1"], "ประเมินไม่ได้: ไม่มีวันที่ทำรายการ/วันประกาศ")
 
     # รวมคะแนน (§5.4)
     med_min = float(cur.execute("SELECT value FROM app_config WHERE key='risk_level_medium_min'").fetchone()[0])
@@ -683,22 +796,37 @@ def run_project_engine(cur, run_id):
     names = {code: n for code, n in cur.execute(
         "SELECT factor_code, name_th FROM risk_factors WHERE scope='project'")}
 
+    band = load_matrix_bands(cur)
     for p in projects:
         pid = p["project_id"]
-        rows = cur.execute("""SELECT factor_code, triggered, computable FROM project_risk_results
+        rows = cur.execute("""SELECT factor_code, triggered, computable, likelihood, impact, matrix_score
+                              FROM project_risk_results
                               WHERE run_id=? AND project_id=?""", (run_id, pid)).fetchall()
-        w_comp = sum(weights[c] for c, t, comp in rows if comp)
-        w_trig = sum(weights[c] for c, t, comp in rows if comp and t)
-        n_trig = sum(1 for c, t, comp in rows if comp and t)
-        n_nc = sum(1 for c, t, comp in rows if not comp)
+        w_comp = sum(weights[c] for c, t, comp, L, I, ms in rows if comp)
+        w_trig = sum(weights[c] for c, t, comp, L, I, ms in rows if comp and t)
+        n_trig = sum(1 for c, t, comp, L, I, ms in rows if comp and t)
+        n_nc = sum(1 for c, t, comp, L, I, ms in rows if not comp)
         score = round(100.0 * w_trig / w_comp, 1) if w_comp > 0 else 0.0
         level = "high" if score > high_min else ("medium" if score >= med_min else "low")
-        summary = ", ".join(names[c] for c, t, comp in rows if comp and t) or "ไม่พบสัญญาณเสี่ยง"
+        # ระดับรวมแบบ 5×5: ยึด "risk item ที่รุนแรงสุด" (factor ที่ matrix_score สูงสุด) เป็นฐาน
+        # แล้วบวกโอกาส +1 เมื่อมีสัญญาณยืนยันกัน ≥3 ตัว (corroboration) — ไม่ triggered → ต่ำ (1×1)
+        trig = [(L, I, ms) for c, t, comp, L, I, ms in rows if comp and t and ms is not None]
+        if trig:
+            topL, topI, _ = max(trig, key=lambda x: x[2])
+            m_like = min(5, topL + (1 if n_trig >= 3 else 0))
+            m_imp = topI
+            m_score = m_like * m_imp
+            m_level = band(m_score)
+        else:
+            m_like, m_imp, m_score, m_level = 1, 1, 1, "ต่ำ"
+        summary = ", ".join(names[c] for c, t, comp, L, I, ms in rows if comp and t) or "ไม่พบสัญญาณเสี่ยง"
         if n_nc:
             summary += f" (ประเมินไม่ได้ {n_nc} factor)"
         cur.execute("""INSERT INTO project_risk_scores (run_id, project_id, risk_score, risk_level,
-            factors_triggered, factors_not_computable, summary_text) VALUES (?,?,?,?,?,?,?)""",
-                    (run_id, pid, score, level, n_trig, n_nc, summary))
+            matrix_likelihood, matrix_impact, matrix_score, matrix_level,
+            factors_triggered, factors_not_computable, summary_text)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    (run_id, pid, score, level, m_like, m_imp, m_score, m_level, n_trig, n_nc, summary))
     n = cur.execute("SELECT COUNT(*) FROM project_risk_scores WHERE run_id=?", (run_id,)).fetchone()[0]
     log(f"project risk: {n} โครงการ ได้คะแนนครบ")
 
@@ -735,18 +863,29 @@ def classify(value, params, kind):
 def run_annual_engine(cur, run_id):
     factors = {code: json.loads(pj) for code, pj in cur.execute(
         "SELECT factor_code, params_json FROM risk_factors WHERE scope='annual' AND enabled=1")}
+    impacts = {code: imp for code, imp in cur.execute(
+        "SELECT factor_code, impact_level FROM risk_factors WHERE scope='annual' AND enabled=1")}
+    band = load_matrix_bands(cur)
     # ทุก (ตำบล × ปี) ที่มีงบ → ต้องมีผลครบทุก factor ห้ามเงียบ (§11.4)
     sets = cur.execute("""SELECT DISTINCT subdistrict_id, fiscal_year FROM financial_statements
         WHERE statement_type IN ('งบแสดงผลการดำเนินงาน','งบแสดงฐานะการเงิน')
         ORDER BY subdistrict_id, fiscal_year""").fetchall()
 
-    def emit(sid, fy, code, triggered, computable, level, observed, params, evidence):
+    def emit(sid, fy, code, triggered, computable, level, observed, params, evidence, likelihood=None):
+        if not computable:
+            L = imp = ms = rb = None
+        else:
+            L = likelihood if (triggered and likelihood is not None) else 1
+            imp = impacts[code]
+            ms = L * imp
+            rb = band(ms)
         cur.execute("""INSERT INTO annual_risk_results (run_id, subdistrict_id, fiscal_year,
             factor_code, triggered, computable, risk_level, observed_value, threshold_used,
-            evidence_text) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            evidence_text, likelihood, impact, matrix_score, risk_band)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (run_id, sid, fy, code, int(triggered), int(computable), level,
                      observed, json.dumps({k: v for k, v in params.items() if k != "account_map"},
-                                          ensure_ascii=False), evidence))
+                                          ensure_ascii=False), evidence, L, imp, ms, rb))
 
     for sid, fy in sets:
         # --- Y1 ---
@@ -762,8 +901,10 @@ def run_annual_engine(cur, run_id):
             else:
                 v = own / (total - loan) * 100
                 lv = classify(v, pr, "Y1")
-                emit(sid, fy, "Y1", lv in ("medium", "high"), 1, lv, round(v, 2), pr,
-                     f"พึ่งพาตนเอง {v:.1f}% ({'≥55% เสี่ยงต่ำ' if lv=='low' else ('30–55% เสี่ยงปานกลาง' if lv=='medium' else '<30% เสี่ยงสูง')}); เงินกู้ไม่มีข้อมูล ถือเป็น 0")
+                trig = lv in ("medium", "high")
+                emit(sid, fy, "Y1", trig, 1, lv, round(v, 2), pr,
+                     f"พึ่งพาตนเอง {v:.1f}% ({'≥55% เสี่ยงต่ำ' if lv=='low' else ('30–55% เสี่ยงปานกลาง' if lv=='medium' else '<30% เสี่ยงสูง')}); เงินกู้ไม่มีข้อมูล ถือเป็น 0",
+                     likelihood_from_map(v, pr.get("likelihood_map"), trig))
 
         # --- Y2 ---
         if "Y2" in factors:
@@ -777,8 +918,10 @@ def run_annual_engine(cur, run_id):
             else:
                 v = bal / total * 100
                 lv = classify(v, pr, "Y2")
-                emit(sid, fy, "Y2", lv in ("medium", "high"), 1, lv, round(v, 2), pr,
-                     f"ดุลดำเนินงาน {v:.1f}% ของรายได้ ({'≥15% เสี่ยงต่ำ' if lv=='low' else ('0–15% เสี่ยงปานกลาง' if lv=='medium' else 'ขาดดุล เสี่ยงสูง')})")
+                trig = lv in ("medium", "high")
+                emit(sid, fy, "Y2", trig, 1, lv, round(v, 2), pr,
+                     f"ดุลดำเนินงาน {v:.1f}% ของรายได้ ({'≥15% เสี่ยงต่ำ' if lv=='low' else ('0–15% เสี่ยงปานกลาง' if lv=='medium' else 'ขาดดุล เสี่ยงสูง')})",
+                     likelihood_from_map(v, pr.get("likelihood_map"), trig))
 
         # --- Y3 ---
         if "Y3" in factors:
@@ -794,8 +937,10 @@ def run_annual_engine(cur, run_id):
             else:
                 v = cash / (commit + liab)
                 lv = classify(v, pr, "Y3")
-                emit(sid, fy, "Y3", lv in ("medium", "high"), 1, lv, round(v, 2), pr,
-                     f"Cash coverage {v:.2f} เท่า ({'≥5 เท่า เสี่ยงต่ำ' if lv=='low' else ('1–5 เท่า เสี่ยงปานกลาง' if lv=='medium' else '<1 เท่า เสี่ยงสูง')}); ภาระผูกพันไม่มีข้อมูล ถือเป็น 0")
+                trig = lv in ("medium", "high")
+                emit(sid, fy, "Y3", trig, 1, lv, round(v, 2), pr,
+                     f"Cash coverage {v:.2f} เท่า ({'≥5 เท่า เสี่ยงต่ำ' if lv=='low' else ('1–5 เท่า เสี่ยงปานกลาง' if lv=='medium' else '<1 เท่า เสี่ยงสูง')}); ภาระผูกพันไม่มีข้อมูล ถือเป็น 0",
+                     likelihood_from_map(v, pr.get("likelihood_map"), trig))
 
     n = cur.execute("SELECT COUNT(*) FROM annual_risk_results WHERE run_id=?", (run_id,)).fetchone()[0]
     log(f"annual risk: {n} ผล ({len(sets)} ชุดตำบล×ปี × {len(factors)} factors)")
@@ -871,6 +1016,20 @@ def validate(cur):
           n_roles == len(ROLES) and n_scoped_null == 0,
           f"roles={n_roles}, scoped-user ไม่มีตำบล={n_scoped_null}")
 
+    # 9) 5×5 matrix สอดคล้อง: ทุกแถวที่ triggered & computable ต้องมี likelihood/impact/matrix_score/risk_band ครบ
+    #    และ matrix_score = likelihood × impact; ส่วนแถว computable=0 ต้องเป็น NULL ทั้งหมด (ไม่เดา)
+    bad_matrix = 0
+    for tbl in ("project_risk_results", "annual_risk_results"):
+        bad_matrix += cur.execute(f"""SELECT COUNT(*) FROM {tbl}
+            WHERE run_id=(SELECT MAX(run_id) FROM assessment_runs) AND (
+                (computable=1 AND (likelihood IS NULL OR impact IS NULL OR risk_band IS NULL
+                                   OR matrix_score != likelihood*impact))
+             OR (computable=0 AND (likelihood IS NOT NULL OR impact IS NOT NULL
+                                   OR matrix_score IS NOT NULL OR risk_band IS NOT NULL)))
+            """).fetchone()[0]
+    check("9) 5×5 matrix ครบถ้วน (computable→มีค่า & score=โอกาส×ผลกระทบ; ไม่ computable→NULL)",
+          bad_matrix == 0, f"แถวผิด {bad_matrix}")
+
     return ok
 
 
@@ -941,8 +1100,10 @@ def main():
 
     print("[4/5] รัน risk engine ครั้งแรก")
     snapshot = json.dumps(
-        [dict(factor_code=r[0], scope=r[1], params_json=r[2], weight=r[3], severity=r[4], enabled=r[5])
-         for r in cur.execute("SELECT factor_code, scope, params_json, weight, severity, enabled FROM risk_factors")],
+        [dict(factor_code=r[0], scope=r[1], params_json=r[2], weight=r[3], severity=r[4],
+              impact_level=r[5], legal_ref=r[6], enabled=r[7])
+         for r in cur.execute("""SELECT factor_code, scope, params_json, weight, severity,
+              impact_level, legal_ref, enabled FROM risk_factors""")],
         ensure_ascii=False)
     cur.execute("INSERT INTO assessment_runs (triggered_by, factor_config_snapshot, note) VALUES (?,?,?)",
                 ("system", snapshot, "initial seed run"))

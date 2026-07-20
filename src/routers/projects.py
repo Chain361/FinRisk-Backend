@@ -51,7 +51,7 @@ def list_projects(
         SELECT p.project_id, p.project_name, p.budget_year, p.subdistrict_id,
                p.project_type, p.purchase_method_group,
                p.budget_amount, p.reference_price, p.contract_value, p.price_ratio,
-               s.risk_score, s.risk_level, s.factors_triggered
+               s.risk_score, s.risk_level, s.matrix_level, s.factors_triggered
         FROM projects p
         LEFT JOIN project_risk_scores s
                ON s.project_id = p.project_id AND s.run_id = ?
@@ -82,8 +82,9 @@ def get_project(
         (project_id, run_id),
     ).fetchone()
     factors = conn.execute(
-        """SELECT r.factor_code, f.name_th, f.severity, r.triggered, r.computable,
-                  r.observed_value, r.threshold_used, r.evidence_text
+        """SELECT r.factor_code, f.name_th, f.severity, f.impact_level, f.legal_ref, f.formula,
+                  r.triggered, r.computable, r.observed_value, r.threshold_used, r.evidence_text,
+                  r.likelihood, r.impact, r.matrix_score, r.risk_band
            FROM project_risk_results r
            JOIN risk_factors f ON f.factor_code = r.factor_code
            WHERE r.project_id = ? AND r.run_id = ?
