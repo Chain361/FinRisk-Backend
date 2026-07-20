@@ -41,8 +41,9 @@ def annual_results(
         params += allowed
     sql = f"""
         SELECT a.subdistrict_id, s.name_th AS subdistrict, a.fiscal_year,
-               a.factor_code, f.name_th AS factor_name, a.triggered, a.computable,
-               a.risk_level, a.observed_value, a.threshold_used, a.evidence_text
+               a.factor_code, f.name_th AS factor_name, f.legal_ref, a.triggered, a.computable,
+               a.risk_level, a.observed_value, a.threshold_used, a.evidence_text,
+               a.likelihood, a.impact, a.matrix_score, a.risk_band
         FROM annual_risk_results a
         JOIN subdistricts s ON s.subdistrict_id = a.subdistrict_id
         JOIN risk_factors f ON f.factor_code = a.factor_code

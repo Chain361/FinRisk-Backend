@@ -199,14 +199,20 @@ CREATE TABLE risk_factors (
     name_th       TEXT NOT NULL,
     description   TEXT NOT NULL,                    -- นิยาม + เหตุผลว่าเป็นสัญญาณเสี่ยงอย่างไร
     formula       TEXT NOT NULL,                    -- สูตร/เงื่อนไขเชิงคำนวณ อ่านได้ทั้งคนและ AI
-    params_json   TEXT NOT NULL DEFAULT '{}',       -- threshold ที่ปรับได้ เช่น {"discount_pct_min": 0.15}
-    weight        REAL NOT NULL DEFAULT 1.0,        -- น้ำหนักตอนรวมคะแนน
+    params_json   TEXT NOT NULL DEFAULT '{}',       -- threshold + likelihood_map (โอกาส 1–5) เช่น {"discount_pct_min":0.15,"likelihood_map":[...]}
+    weight        REAL NOT NULL DEFAULT 1.0,        -- น้ำหนักตอนรวมคะแนนสัดส่วน
     severity      TEXT NOT NULL DEFAULT 'medium' CHECK (severity IN ('low','medium','high')),
+    impact_level  INTEGER NOT NULL DEFAULT 3 CHECK (impact_level BETWEEN 1 AND 5),  -- ผลกระทบคงที่ต่อ factor (5×5 matrix)
+    legal_ref     TEXT,                             -- ฐานกฎหมาย/ระเบียบอ้างอิง (⚠️ ให้ฝ่ายกฎหมายยืนยันเลขมาตรา/ข้อ)
     data_requirement TEXT,                          -- คอลัมน์ที่ต้องมี → บอกได้ว่าตำบลไหนคำนวณไม่ได้
     enabled       INTEGER NOT NULL DEFAULT 1,
     created_at    TEXT DEFAULT (datetime('now'))
 );
 ```
+
+> **อัปเดต ก.ค. 2569 — กรอบ 5×5 (โอกาส × ผลกระทบ):** เพิ่ม `impact_level` (ผลกระทบคงที่ 1–5) และ
+> `legal_ref` ต่อ factor; `params_json` เพิ่ม `likelihood_map` (map ค่าที่วัดได้ → โอกาส 1–5)
+> รายละเอียดวิธีคิด/เกณฑ์ ดู **`docs/RISK_ASSESSMENT_METHODOLOGY.md`** (source of truth ของวิธีประเมิน)
 
 **Seed 5 factor ระดับโครงการ (จาก Risk Factor Design ระดับโครงการ.pdf):**
 
@@ -253,6 +259,10 @@ CREATE TABLE project_risk_results (
     observed_value REAL,                            -- ค่าที่วัดได้จริง เช่น discount 0.205
     threshold_used TEXT,                            -- JSON ของ params ที่ใช้ ณ ตอนรัน
     evidence_text TEXT,                             -- คำอธิบายภาษาคน เช่น "ส่วนลด 20.5% เกินเกณฑ์ 15%"
+    likelihood    INTEGER,                          -- โอกาส 1–5 (NULL เมื่อ computable=0)
+    impact        INTEGER,                          -- ผลกระทบ 1–5 (สำเนาจาก risk_factors.impact_level ณ ตอนรัน)
+    matrix_score  INTEGER,                          -- likelihood × impact (1–25)
+    risk_band     TEXT CHECK (risk_band IN ('ต่ำ','ปานกลาง','สูง','สูงมาก')),  -- ระดับตาม 5×5 matrix
     UNIQUE(run_id, project_id, factor_code)
 );
 CREATE INDEX idx_prr_project ON project_risk_results(project_id, run_id);
@@ -267,14 +277,21 @@ CREATE TABLE project_risk_scores (
     score_id    INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id      INTEGER NOT NULL REFERENCES assessment_runs(run_id),
     project_id  TEXT NOT NULL REFERENCES projects(project_id),
-    risk_score  REAL NOT NULL,                      -- 0–100
+    risk_score  REAL NOT NULL,                      -- 0–100 (คะแนนสัดส่วน — จัดอันดับละเอียด)
     risk_level  TEXT NOT NULL CHECK (risk_level IN ('low','medium','high')),
+    matrix_likelihood INTEGER,                      -- โอกาสรวมของโครงการ 1–5 (โอกาสสูงสุด + โบนัส corroboration)
+    matrix_impact     INTEGER,                      -- ผลกระทบสูงสุดของ factor ที่ triggered 1–5
+    matrix_score      INTEGER,                      -- matrix_likelihood × matrix_impact (1–25)
+    matrix_level TEXT CHECK (matrix_level IN ('ต่ำ','ปานกลาง','สูง','สูงมาก')),  -- headline 5×5
     factors_triggered INTEGER NOT NULL,
     factors_not_computable INTEGER NOT NULL DEFAULT 0,
     summary_text TEXT,                              -- "งบเพิ่มสูง, เอกสารไม่ครบ" (สำหรับ dashboard Feature 2)
     UNIQUE(run_id, project_id)
 );
 ```
+
+> **5×5 (§ methodology ข้อ 5):** headline โครงการใช้ `matrix_level` — ยึด risk item รุนแรงสุด
+> แล้ว +1 โอกาสเมื่อมีสัญญาณยืนยันกัน ≥3 ตัว; `risk_score/risk_level` เดิมคงไว้จัดอันดับละเอียด
 
 สูตรรวมคะแนน (ให้ engine ฝั่ง app implement): `risk_score = 100 × Σ(weight ของ factor ที่ triggered) / Σ(weight ของ factor ที่ computable)` แล้ว map เป็น level ด้วยเกณฑ์ใน `app_config` (default: <30 low, 30–60 medium, >60 high) — ปรับได้โดย admin
 
@@ -293,6 +310,10 @@ CREATE TABLE annual_risk_results (
     observed_value REAL,
     threshold_used TEXT,
     evidence_text TEXT,
+    likelihood    INTEGER,                          -- โอกาส 1–5 (NULL เมื่อ computable=0)
+    impact        INTEGER,                          -- ผลกระทบ 1–5 (จาก risk_factors.impact_level)
+    matrix_score  INTEGER,                          -- likelihood × impact (1–25)
+    risk_band     TEXT CHECK (risk_band IN ('ต่ำ','ปานกลาง','สูง','สูงมาก')),  -- ระดับตาม 5×5 matrix
     UNIQUE(run_id, subdistrict_id, fiscal_year, factor_code)
 );
 ```

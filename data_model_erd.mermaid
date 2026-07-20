@@ -56,8 +56,10 @@ erDiagram
         text scope "project|annual"
         text name_th
         text formula
-        text params_json
+        text params_json "threshold + likelihood_map"
         real weight
+        int impact_level "ผลกระทบ 1-5"
+        text legal_ref "ฐานกฎหมาย"
         int enabled
     }
     assessment_runs {
@@ -73,14 +75,23 @@ erDiagram
         int triggered
         int computable "0=ข้อมูลไม่พอ"
         real observed_value
+        text threshold_used
         text evidence_text
+        int likelihood "โอกาส 1-5"
+        int impact "ผลกระทบ 1-5"
+        int matrix_score "1-25"
+        text risk_band "ต่ำ..สูงมาก"
     }
     project_risk_scores {
         int score_id PK
         int run_id FK
         text project_id FK
-        real risk_score "0-100"
+        real risk_score "0-100 สัดส่วน"
         text risk_level "low|medium|high"
+        int matrix_likelihood "โอกาสรวม 1-5"
+        int matrix_impact "1-5"
+        int matrix_score "1-25"
+        text matrix_level "headline 5x5"
         text summary_text
     }
     annual_risk_results {
@@ -92,6 +103,10 @@ erDiagram
         int triggered
         int computable
         text evidence_text
+        int likelihood "โอกาส 1-5"
+        int impact "ผลกระทบ 1-5"
+        int matrix_score "1-25"
+        text risk_band "ต่ำ..สูงมาก"
     }
     audit_assignments {
         int assignment_id PK
