@@ -240,6 +240,26 @@ CREATE TABLE auditor_feedback (
     created_at    TEXT DEFAULT (datetime('now'))
 );
 
+-- บันทึกการเข้าถึงของผู้ใช้ (accountability trail) — ใครทำอะไรกับ resource ไหน เมื่อไหร่
+-- เขียนโดย middleware ตอน runtime (src/audit_log.py) เริ่มว่างเปล่าใน seed; append-only (ไม่มี UPDATE/DELETE)
+-- username/role เก็บแบบ denormalize เพื่อคง snapshot ณ เวลาที่เกิด action (role อาจเปลี่ยนภายหลัง)
+CREATE TABLE access_log (
+    log_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT,
+    role          TEXT,
+    action        TEXT NOT NULL,        -- login / view_list / view_detail / export / other (derive จาก method+path)
+    method        TEXT NOT NULL,
+    path          TEXT NOT NULL,
+    resource_type TEXT,                 -- project / risk / subdistrict / financial / audit (derive จาก path)
+    resource_id   TEXT,
+    status_code   INTEGER,
+    ip            TEXT,
+    user_agent    TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_access_log_user_time ON access_log(username, created_at);
+CREATE INDEX idx_access_log_time      ON access_log(created_at);
+
 CREATE VIEW v_subdistrict_dashboard AS
 SELECT s.name_th AS subdistrict, p.budget_year,
        COUNT(*)                              AS project_count,
@@ -443,7 +463,11 @@ MOCK_USERS = [
     ("pingkhong_user", "นายก/ปลัด ทต.ปิงโค้ง", "local_executive", "ปิงโค้ง"),
     ("yonok_user", "นายก/ปลัด ทต.โยนก", "local_executive", "โยนก"),
     ("auditor1", "ผู้ตรวจสอบโครงการ ทต.ท่าช้าง", "project_auditor", "ท่าช้าง"),
+    ("auditor2", "ผู้ตรวจสอบโครงการ ทต.ปิงโค้ง", "project_auditor", "ปิงโค้ง"),
+    ("auditor3", "ผู้ตรวจสอบโครงการ ทต.โยนก",   "project_auditor", "โยนก"),
     ("analyst1", "นักวิเคราะห์ความเสี่ยง ทต.ท่าช้าง", "risk_analyst", "ท่าช้าง"),
+    ("analyst2", "นักวิเคราะห์ความเสี่ยง ทต.ปิงโค้ง", "risk_analyst", "ปิงโค้ง"),
+    ("analyst3", "นักวิเคราะห์ความเสี่ยง ทต.โยนก",   "risk_analyst", "โยนก"),
     ("public1", "ประชาชนทั่วไป", "public_user", None),
 ]
 

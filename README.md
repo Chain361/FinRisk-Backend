@@ -123,8 +123,8 @@ mock users ทั้งหมดรหัสผ่านเดียวกัน
 | `admin` | admin | ทุกตำบล + ตั้งค่าระบบ (risk_factors, app_config, users) |
 | `supervisor1` | regional_supervisor | ทุกตำบล เปรียบเทียบข้ามตำบลได้ |
 | `thachang_user` / `pingkhong_user` / `yonok_user` | local_executive | **เฉพาะตำบลของตัวเอง** |
-| `auditor1` | project_auditor | เฉพาะตำบลของตัวเอง + มอบหมายงานตรวจสอบ |
-| `analyst1` | risk_analyst | เฉพาะตำบลของตัวเอง + รับงานที่ได้รับมอบหมาย + ส่งรายงานผลตรวจ |
+| `auditor1` / `auditor2` / `auditor3` | project_auditor | เฉพาะตำบลของตัวเอง + มอบหมายงานตรวจสอบ |
+| `analyst1` / `analyst2` / `analyst3` | risk_analyst | เฉพาะตำบลของตัวเอง + รับงานที่ได้รับมอบหมาย + ส่งรายงานผลตรวจ |
 | `public1` | public_user | ทุกตำบล (read-only, **ไม่เห็นข้อมูลที่ถูกปิดไว้** เช่น `/audit/*`) |
 
 การจำกัด scope อยู่ที่ `src/auth.py` → `scope_subdistrict_ids()` ทุก endpoint ที่คืนข้อมูลตำบล
