@@ -132,6 +132,20 @@ erDiagram
         text comment
         int manual_risk_score "1-5"
     }
+    access_log {
+        int log_id PK
+        text username "denormalized snapshot"
+        text role
+        text action "login/view_list/view_detail/export"
+        text method
+        text path
+        text resource_type
+        text resource_id
+        int status_code
+        text ip
+        text user_agent
+        text created_at
+    }
 
     subdistricts ||--o{ projects : ""
     subdistricts ||--o{ financial_statements : ""

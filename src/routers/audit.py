@@ -9,7 +9,7 @@ scaffold นี้แค่วาง endpoint โครงไว้ ปรับ
 """
 import sqlite3
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from ..auth import require_roles, scope_subdistrict_ids
 from ..database import get_db, rows_to_dicts
@@ -59,6 +59,57 @@ def project_feedback(
         (project_id,),
     ).fetchall()
     return rows_to_dicts(rows)
+
+
+@router.get("/access-log")
+def access_log(
+    _: dict = Depends(require_roles("admin")),  # เฉพาะผู้ดูแลระบบ — log การเข้าถึงเป็นข้อมูลอ่อนไหว
+    conn: sqlite3.Connection = Depends(get_db),
+    username: str | None = None,
+    action: str | None = None,
+    resource_type: str | None = None,
+    date_from: str | None = None,  # 'YYYY-MM-DD' (รวม)
+    date_to: str | None = None,    # 'YYYY-MM-DD' (รวมทั้งวัน)
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+):
+    """บันทึกการเข้าถึงของผู้ใช้ (accountability trail) — กรอง + แบ่งหน้า
+    คืน {items, total, limit, offset}; เรียงใหม่สุดก่อน"""
+    where: list[str] = []
+    params: list = []
+    if username:
+        where.append("username = ?")
+        params.append(username)
+    if action:
+        where.append("action = ?")
+        params.append(action)
+    if resource_type:
+        where.append("resource_type = ?")
+        params.append(resource_type)
+    if date_from:
+        where.append("created_at >= ?")
+        params.append(date_from)
+    if date_to:
+        where.append("created_at < date(?, '+1 day')")
+        params.append(date_to)
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM access_log{clause}", params
+    ).fetchone()[0]
+    rows = conn.execute(
+        f"""SELECT log_id, username, role, action, method, path, resource_type,
+                   resource_id, status_code, ip, user_agent, created_at
+            FROM access_log{clause}
+            ORDER BY log_id DESC LIMIT ? OFFSET ?""",
+        [*params, limit, offset],
+    ).fetchall()
+    return {
+        "items": rows_to_dicts(rows),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 # ตัวอย่าง endpoint ที่จำกัดสิทธิ์ — เปิดใช้เมื่อพร้อมทำ business logic เขียนข้อมูล

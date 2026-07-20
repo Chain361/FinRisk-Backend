@@ -384,6 +384,33 @@ CREATE TABLE auditor_feedback (
 
 **หมายเหตุ:** ตัด sentiment analysis (AI) ออกจาก scope รอบนี้ — การประเมินระดับความเสี่ยง/ความกังวลใช้ likelihood/impact/risk_level ในแบบฟอร์ม `audit_reports` (§6.2) เป็นหลัก ถ้าจะเพิ่ม sentiment ภายหลัง ให้เพิ่มคอลัมน์ `sentiment_label`, `ai_summary` ในตารางนี้ (แยกจาก comment ของคนชัดเจนตามหลัก Responsible AI)
 
+### 6.4 `access_log` — บันทึกการเข้าถึงของผู้ใช้ (accountability trail)
+
+บันทึกว่า "ใครเข้าดู/ทำอะไรกับ resource ไหน เมื่อไหร่" เพื่อความรับผิดชอบตรวจสอบได้ตามมาตรฐานราชการ (แยกจาก audit trail ของ *ปัจจัยความเสี่ยง* — อันนั้นคือที่มาของคะแนน, อันนี้คือพฤติกรรมผู้ใช้)
+
+```sql
+CREATE TABLE access_log (
+    log_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT,                 -- denormalize: snapshot ณ เวลา action (ไม่ FK เผื่อ user ถูกลบ)
+    role          TEXT,                 -- role ณ เวลา action
+    action        TEXT NOT NULL,        -- login / view_list / view_detail / export / write / other
+    method        TEXT NOT NULL,
+    path          TEXT NOT NULL,
+    resource_type TEXT,                 -- project / risk / subdistrict / financial / audit
+    resource_id   TEXT,
+    status_code   INTEGER,              -- เก็บทั้งสำเร็จ + 403/401 (ตรวจความพยายามเข้าถึงที่ไม่มีสิทธิ์)
+    ip            TEXT,
+    user_agent    TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_access_log_user_time ON access_log(username, created_at);
+CREATE INDEX idx_access_log_time      ON access_log(created_at);
+```
+
+**การเขียน:** middleware ใน `src/main.py` เรียก `src/audit_log.py::record_access(...)` หลัง response เสร็จ — เขียนเฉพาะ request ที่มี header `X-Username` และไม่ใช่ noise (`/health`, `/docs`, preflight) เป็น **best-effort** (ถ้า filesystem อ่านอย่างเดียวบน serverless จะข้ามเงียบ ๆ ไม่ทำให้ request พัง). **อ่าน:** `GET /audit/access-log` (admin เท่านั้น) รองรับ filter `username/action/resource_type/date_from/date_to` + paging. เริ่ม **ว่างเปล่า** ใน seed; append-only (ไม่มี UPDATE/DELETE เพื่อกันลบร่องรอย).
+
+> ⚠️ **ข้อจำกัดบน Vercel:** filesystem อ่านอย่างเดียวตอน runtime → log จะไม่ถูกเขียน (ดูว่างเปล่า). ฟีเจอร์นี้ทำงานเต็มรูปแบบเมื่อ deploy บนเซิร์ฟเวอร์ที่ DB เขียนได้ (สภาพแวดล้อมจริงของหน่วยงานที่ self-host). ระยะยาว: ย้าย log ไป DB ภายนอก/managed เพื่อความคงทน.
+
 ---
 
 ## 7. โมดูล Document Intelligence + Chatbot + Legal Linkage — **ตัดออกจาก scope รอบนี้**
