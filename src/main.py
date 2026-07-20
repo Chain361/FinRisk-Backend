@@ -17,6 +17,8 @@ app = FastAPI(title=API_TITLE, version=API_VERSION)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
+    # อนุญาต frontend ที่ deploy บน Vercel ทุก subdomain (รวม preview URL) — สำหรับ prototype
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

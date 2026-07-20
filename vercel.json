@@ -1,0 +1,6 @@
+{
+  "buildCommand": "python3 seed_database.py --force",
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/api/index" }
+  ]
+}
