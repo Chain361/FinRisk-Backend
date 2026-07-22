@@ -232,13 +232,21 @@ CREATE TABLE audit_reports (
 );
 
 CREATE TABLE auditor_feedback (
-    feedback_id   INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id    TEXT NOT NULL REFERENCES projects(project_id),
-    user_id       INTEGER NOT NULL REFERENCES users(user_id),
-    comment       TEXT NOT NULL,
-    manual_risk_score INTEGER CHECK (manual_risk_score BETWEEN 1 AND 5),
-    created_at    TEXT DEFAULT (datetime('now'))
+    feedback_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id       TEXT NOT NULL REFERENCES projects(project_id),
+    user_id          INTEGER NOT NULL REFERENCES users(user_id),
+    feedback_text    TEXT NOT NULL,
+    concern_level    TEXT CHECK (concern_level IN ('low','medium','high','critical')),
+    likelihood_score INTEGER CHECK (likelihood_score BETWEEN 1 AND 5),
+    impact_score     INTEGER CHECK (impact_score BETWEEN 1 AND 5),
+    suggestions      TEXT,
+    status           TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','submitted','resolved')),
+    created_at       TEXT DEFAULT (datetime('now')),
+    updated_at       TEXT DEFAULT (datetime('now')),
+    submitted_at     TEXT,
+    resolved_at      TEXT
 );
+CREATE INDEX idx_feedback_project ON auditor_feedback(project_id);
 
 -- บันทึกการเข้าถึงของผู้ใช้ (accountability trail) — ใครทำอะไรกับ resource ไหน เมื่อไหร่
 -- เขียนโดย middleware ตอน runtime (src/audit_log.py) เริ่มว่างเปล่าใน seed; append-only (ไม่มี UPDATE/DELETE)

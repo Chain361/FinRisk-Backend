@@ -373,16 +373,24 @@ CREATE TABLE audit_reports (
 
 ```sql
 CREATE TABLE auditor_feedback (
-    feedback_id   INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id    TEXT NOT NULL REFERENCES projects(project_id),
-    user_id       INTEGER NOT NULL REFERENCES users(user_id),
-    comment       TEXT NOT NULL,
-    manual_risk_score INTEGER CHECK (manual_risk_score BETWEEN 1 AND 5),  -- คะแนนที่ผู้ตรวจให้เอง
-    created_at    TEXT DEFAULT (datetime('now'))
+    feedback_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id       TEXT NOT NULL REFERENCES projects(project_id),
+    user_id          INTEGER NOT NULL REFERENCES users(user_id),
+    feedback_text    TEXT NOT NULL,
+    concern_level    TEXT CHECK (concern_level IN ('low','medium','high','critical')),
+    likelihood_score INTEGER CHECK (likelihood_score BETWEEN 1 AND 5),
+    impact_score     INTEGER CHECK (impact_score BETWEEN 1 AND 5),  -- risk_score = likelihood_score × impact_score (คำนวณตอนตอบกลับ ไม่เก็บคอลัมน์แยก)
+    suggestions      TEXT,
+    status           TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','submitted','resolved')),  -- F5: บันทึกร่าง -> ส่ง -> (project_auditor/admin) ปิดเรื่อง
+    created_at       TEXT DEFAULT (datetime('now')),
+    updated_at       TEXT DEFAULT (datetime('now')),
+    submitted_at     TEXT,
+    resolved_at      TEXT
 );
+CREATE INDEX idx_feedback_project ON auditor_feedback(project_id);
 ```
 
-**หมายเหตุ:** ตัด sentiment analysis (AI) ออกจาก scope รอบนี้ — การประเมินระดับความเสี่ยง/ความกังวลใช้ likelihood/impact/risk_level ในแบบฟอร์ม `audit_reports` (§6.2) เป็นหลัก ถ้าจะเพิ่ม sentiment ภายหลัง ให้เพิ่มคอลัมน์ `sentiment_label`, `ai_summary` ในตารางนี้ (แยกจาก comment ของคนชัดเจนตามหลัก Responsible AI)
+**หมายเหตุ:** ตัด sentiment analysis (AI) ออกจาก scope รอบนี้ — ถ้าจะเพิ่ม sentiment ภายหลัง ให้เพิ่มคอลัมน์ `sentiment_label`, `ai_summary` ในตารางนี้ (แยกจาก feedback_text ของคนชัดเจนตามหลัก Responsible AI)
 
 ### 6.4 `access_log` — บันทึกการเข้าถึงของผู้ใช้ (accountability trail)
 
