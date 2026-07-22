@@ -660,7 +660,12 @@ def seed_users_config(cur, sub_id):
     for key, value, desc in APP_CONFIG:
         cur.execute("INSERT INTO app_config (key, value, description) VALUES (?,?,?)",
                     (key, value, desc))
-    log(f"roles: {len(ROLES)} | users: {len(MOCK_USERS)} (mock, รหัสผ่าน password123) | app_config: {len(APP_CONFIG)}")
+    # วันที่ seed ข้อมูล (data-as-of) — frontend อ่านผ่าน /meta เพื่อแสดง "ข้อมูล ณ วันที่ …"
+    # แทนวันที่ปัจจุบันของเครื่องผู้ใช้ (bug เดิม); ISO 8601 พร้อม timezone ของเครื่องที่รัน seed
+    cur.execute("INSERT INTO app_config (key, value, description) VALUES (?,?,?)",
+                ("data_seeded_at", datetime.now().astimezone().isoformat(timespec="seconds"),
+                 "วันเวลาที่ seed ข้อมูลลง DB (data snapshot as-of)"))
+    log(f"roles: {len(ROLES)} | users: {len(MOCK_USERS)} (mock, รหัสผ่าน password123) | app_config: {len(APP_CONFIG) + 1}")
 
 # ---------------------------------------------------------------------------
 # 5. Risk Engine — ระดับโครงการ (§10) + 5×5 matrix (โอกาส × ผลกระทบ)

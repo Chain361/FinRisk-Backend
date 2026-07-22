@@ -16,8 +16,8 @@ import sqlite3
 
 log = logging.getLogger("finrisk.audit")
 
-# path ที่ไม่ต้องบันทึก (noise: health check, docs, preflight, static)
-_SKIP_PREFIXES = ("/health", "/docs", "/openapi", "/redoc", "/favicon", "/static")
+# path ที่ไม่ต้องบันทึก (noise: health check, metadata, docs, preflight, static)
+_SKIP_PREFIXES = ("/health", "/meta", "/docs", "/openapi", "/redoc", "/favicon", "/static")
 
 # map path segment แรก → ชนิด resource ที่มนุษย์อ่านเข้าใจ
 _RESOURCE_MAP = {

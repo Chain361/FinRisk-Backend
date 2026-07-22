@@ -13,6 +13,16 @@ def test_health():
     assert r.json()["db_exists"] is True
 
 
+def test_meta():
+    r = client.get("/meta")
+    assert r.status_code == 200
+    body = r.json()
+    # data-as-of ต้องมาจาก seed (ไม่ใช่ null) เพื่อไม่ให้ frontend fallback เป็นวันที่ปัจจุบัน
+    assert body["data_seeded_at"]
+    assert body["fiscal_year_min"] == 2566
+    assert body["fiscal_year_max"] == 2568
+
+
 def test_login_and_scope():
     # login mock — รหัสผ่านทุก user = password123
     r = client.post("/auth/login", json={"username": "thachang_user", "password": "password123"})
