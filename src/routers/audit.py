@@ -269,6 +269,19 @@ def update_assignment_status(
     return _assignment_detail(conn, assignment_id)
 
 
+@router.delete("/assignments/{assignment_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_assignment(
+    assignment_id: int,
+    user: dict = Depends(require_roles("admin")),
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    _assignment_in_scope(conn, assignment_id, user)
+    conn.execute("DELETE FROM assignment_status_history WHERE assignment_id = ?", (assignment_id,))
+    conn.execute("DELETE FROM assignments WHERE assignment_id = ?", (assignment_id,))
+    conn.commit()
+    return None
+
+
 @router.get("/feedback/{project_id}")
 def project_feedback(
     project_id: str,

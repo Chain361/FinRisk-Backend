@@ -150,6 +150,18 @@ def test_auditor_can_create_assignment_with_history():
         )
         assert accepted.status_code == 200
         assert accepted.json()["status"] == "accepted"
+
+        denied_delete = client.delete(f"/audit/assignments/{assignment_id}", headers=analyst_headers)
+        assert denied_delete.status_code == 403
+
+        denied_auditor_delete = client.delete(f"/audit/assignments/{assignment_id}", headers=auditor_headers)
+        assert denied_auditor_delete.status_code == 403
+
+        deleted = client.delete(f"/audit/assignments/{assignment_id}", headers={"X-Username": "admin"})
+        assert deleted.status_code == 204
+
+        missing = client.get(f"/audit/assignments/{assignment_id}", headers={"X-Username": "admin"})
+        assert missing.status_code == 404
     finally:
         con = sqlite3.connect(str(DB_PATH))
         try:
