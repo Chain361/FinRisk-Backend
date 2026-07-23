@@ -127,8 +127,6 @@ def test_auditor_can_create_assignment_with_history():
             "priority": "high",
             "note": "ตรวจสอบเอกสารสัญญา",
             "due_date": "2026-08-01",
-            "budget_hours": 8,
-            "audit_steps": "ตรวจเอกสารและสรุปผล",
         },
     )
     assert response.status_code == 201

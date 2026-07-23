@@ -48,8 +48,6 @@ class AssignmentCreate(BaseModel):
     priority: AssignmentPriority = "normal"
     note: str = Field(min_length=1, max_length=5000)
     due_date: str | None = None
-    budget_hours: float | None = Field(default=None, gt=0)
-    audit_steps: str = Field(min_length=1, max_length=5000)
 
 
 class AssignmentUpdate(BaseModel):
@@ -57,8 +55,6 @@ class AssignmentUpdate(BaseModel):
     priority: AssignmentPriority | None = None
     note: str | None = Field(default=None, min_length=1, max_length=5000)
     due_date: str | None = None
-    budget_hours: float | None = Field(default=None, gt=0)
-    audit_steps: str | None = Field(default=None, min_length=1, max_length=5000)
 
 
 class AssignmentStatusUpdate(BaseModel):

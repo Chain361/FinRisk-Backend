@@ -174,11 +174,10 @@ def create_assignment(
         raise HTTPException(status_code=409, detail="โครงการนี้มีงานที่ยังไม่เสร็จสิ้นอยู่แล้ว")
     cursor = conn.execute(
         """INSERT INTO assignments
-           (project_id, assigned_to, assigned_by, priority, note, due_date,
-            budget_hours, audit_steps, status)
-           VALUES (?,?,?,?,?,?,?,?, 'waiting_acceptance')""",
+           (project_id, assigned_to, assigned_by, priority, note, due_date, status)
+           VALUES (?,?,?,?,?,?, 'waiting_acceptance')""",
         (payload.project_id, payload.assignee_id, user["user_id"], payload.priority,
-         payload.note, payload.due_date, payload.budget_hours, payload.audit_steps),
+         payload.note, payload.due_date),
     )
     assignment_id = cursor.lastrowid
     conn.execute(
