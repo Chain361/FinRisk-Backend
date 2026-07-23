@@ -1,0 +1,6 @@
+# deps ของ ocr_pipeline (spec §1)
+pdfplumber>=0.11
+rapidfuzz>=3.0
+
+# โหมด production (--pdf --extractor typhoon) ติดตั้งเพิ่ม:
+#   typhoon-ocr pypdf   (+ poppler-utils ในระบบ)
