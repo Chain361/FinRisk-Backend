@@ -61,6 +61,28 @@ def health():
     return {"status": "ok", "db": str(DB_PATH), "db_exists": DB_PATH.exists()}
 
 
+@app.get("/meta", tags=["meta"])
+def meta():
+    """เมทาดาทาระดับระบบสำหรับแสดง 'ข้อมูล ณ วันที่ …' + ช่วงปีงบที่ครอบคลุม
+    (public เหมือน /health — ไม่ต้อง auth) ป้องกัน frontend แสดงวันที่ปัจจุบันของเครื่องผู้ใช้"""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT value FROM app_config WHERE key = 'data_seeded_at'"
+        ).fetchone()
+        data_seeded_at = row["value"] if row else None
+        span = conn.execute(
+            "SELECT MIN(fiscal_year) AS min_y, MAX(fiscal_year) AS max_y FROM financial_statements"
+        ).fetchone()
+    finally:
+        conn.close()
+    return {
+        "data_seeded_at": data_seeded_at,
+        "fiscal_year_min": span["min_y"] if span else None,
+        "fiscal_year_max": span["max_y"] if span else None,
+    }
+
+
 @app.get("/", tags=["meta"])
 def root():
     return {"service": API_TITLE, "version": API_VERSION, "docs": "/docs"}
