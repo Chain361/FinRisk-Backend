@@ -144,8 +144,14 @@ erDiagram
         int feedback_id PK
         text project_id FK
         int user_id FK
-        text comment
-        int manual_risk_score "1-5"
+        text feedback_text
+        text concern_level "low/medium/high/critical"
+        int likelihood_score "1-5"
+        int impact_score "1-5"
+        text suggestions
+        text status "draft/submitted/resolved"
+        text submitted_at
+        text resolved_at
     }
     access_log {
         int log_id PK

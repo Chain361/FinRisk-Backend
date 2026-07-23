@@ -25,7 +25,7 @@ import json
 import os
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # บังคับ stdout เป็น UTF-8 เพื่อให้ print อักขระพิเศษ (§, →, —) บน Windows cp874 ได้
 sys.stdout.reconfigure(encoding="utf-8")
@@ -252,13 +252,22 @@ CREATE TABLE audit_reports (
 );
 
 CREATE TABLE auditor_feedback (
-    feedback_id   INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id    TEXT NOT NULL REFERENCES projects(project_id),
-    user_id       INTEGER NOT NULL REFERENCES users(user_id),
-    comment       TEXT NOT NULL,
-    manual_risk_score INTEGER CHECK (manual_risk_score BETWEEN 1 AND 5),
-    created_at    TEXT DEFAULT (datetime('now'))
+    feedback_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id       TEXT NOT NULL REFERENCES projects(project_id),
+    user_id          INTEGER NOT NULL REFERENCES users(user_id),
+    feedback_text    TEXT NOT NULL,
+    -- DB เผื่อ 'critical' ไว้ แต่ API (AuditorFeedbackIn) รับเฉพาะ low/medium/high โดยตั้งใจ
+    concern_level    TEXT CHECK (concern_level IN ('low','medium','high','critical')),
+    likelihood_score INTEGER CHECK (likelihood_score BETWEEN 1 AND 5),
+    impact_score     INTEGER CHECK (impact_score BETWEEN 1 AND 5),
+    suggestions      TEXT,
+    status           TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','submitted','resolved')),
+    created_at       TEXT DEFAULT (datetime('now')),
+    updated_at       TEXT DEFAULT (datetime('now')),
+    submitted_at     TEXT,
+    resolved_at      TEXT
 );
+CREATE INDEX idx_feedback_project ON auditor_feedback(project_id);
 
 -- บันทึกการเข้าถึงของผู้ใช้ (accountability trail) — ใครทำอะไรกับ resource ไหน เมื่อไหร่
 -- เขียนโดย middleware ตอน runtime (src/audit_log.py) เริ่มว่างเปล่าใน seed; append-only (ไม่มี UPDATE/DELETE)
@@ -995,6 +1004,71 @@ def run_annual_engine(cur, run_id):
     log(f"annual risk: {n} ผล ({len(sets)} ชุดตำบล×ปี × {len(factors)} factors)")
 
 # ---------------------------------------------------------------------------
+# 6.5 Demo auditor feedback (F5) — ต้องรันหลัง risk engine เพราะเลือกโครงการจาก risk score
+# ---------------------------------------------------------------------------
+
+# (ข้อความ, ข้อเสนอแนะ, concern, โอกาส, ผลกระทบ, สถานะ, วันย้อนหลัง) — API รับ concern เฉพาะ low/medium/high
+DEMO_FEEDBACK = [
+    ("พบราคาสัญญาใกล้ราคากลางผิดปกติ (ส่วนต่างต่ำกว่า 1%) ควรขอเอกสารการสืบราคาจากผู้เสนอราคารายอื่นเพิ่มเติม",
+     "ขอสำเนาใบเสนอราคาทั้ง 3 ราย และบันทึกการกำหนดราคากลางจากหน่วยงานพัสดุ", "high", 4, 4, "submitted", 12),
+    ("ผู้รับจ้างรายเดิมชนะงานประเภทเดียวกันติดต่อกันหลายปีงบประมาณ ควรตรวจสอบการแข่งขันในการเสนอราคา",
+     "เปรียบเทียบรายชื่อผู้ซื้อซองกับผู้ยื่นเสนอราคาย้อนหลัง 3 ปี", "high", 4, 3, "submitted", 9),
+    ("เอกสารแนบโครงการไม่ครบตามระเบียบพัสดุ ขาดบันทึกคณะกรรมการตรวจรับ",
+     "ให้หน่วยงานเจ้าของโครงการส่งเอกสารเพิ่มเติมภายใน 15 วัน", "medium", 3, 3, "submitted", 7),
+    ("งบประมาณโครงการสูงกว่าค่าเฉลี่ยโครงการประเภทเดียวกันในตำบลอย่างมีนัยสำคัญ",
+     "ขอรายละเอียดแบบรูปรายการและประมาณการราคาต่อหน่วยมาเทียบราคาตลาด", "medium", 3, 4, "submitted", 6),
+    ("ตรวจสอบเบื้องต้นแล้วไม่พบความผิดปกติ ราคาและกระบวนการเป็นไปตามระเบียบ",
+     None, "low", 1, 2, "resolved", 20),
+    ("โครงการแบ่งซื้อแบ่งจ้างในช่วงเวลาใกล้เคียงกัน อาจเข้าข่ายหลีกเลี่ยงวิธีประกวดราคา — ตรวจสอบแล้วมีเหตุผลความจำเป็นเร่งด่วนรองรับ",
+     "ปิดประเด็น แต่ให้บันทึกแนวปฏิบัติแจ้งหน่วยงานเพื่อป้องกันในปีถัดไป", "medium", 2, 3, "resolved", 18),
+    ("อยู่ระหว่างรวบรวมข้อมูลสัญญาและเอกสารการส่งมอบงวดงาน ยังสรุปไม่ได้",
+     None, "medium", 3, 3, "draft", 3),
+    ("พบข้อสังเกตเรื่องคุณสมบัติผู้เสนอราคา รอเอกสารทะเบียนผู้ค้าจากหน่วยงานพัสดุ",
+     "นัดประชุมร่วมกับนักวิเคราะห์สัปดาห์หน้า", "high", 3, 4, "draft", 1),
+]
+
+
+def seed_auditor_feedback(cur):
+    """seed ความเห็นผู้ตรวจสอบ (demo) — ผูกกับโครงการ risk สูงสุดของแต่ละตำบลจากผล engine จริง
+    เพื่อให้หน้า F5/F6 มีข้อมูลเดโมครบทุกสถานะ (draft/submitted/resolved) และทุกตำบล"""
+    auditors = {}  # subdistrict_id -> (user_id)
+    for uid, sid in cur.execute(
+            "SELECT user_id, subdistrict_id FROM users WHERE role='project_auditor'"):
+        auditors[sid] = uid
+
+    # โครงการ risk สูงสุด 3 อันดับต่อตำบล (run ล่าสุด) — ไม่ hardcode project_id
+    top_projects = {}  # subdistrict_id -> [project_id, ...]
+    for pid, sid in cur.execute("""
+            SELECT prs.project_id, p.subdistrict_id
+            FROM project_risk_scores prs
+            JOIN projects p ON p.project_id = prs.project_id
+            WHERE prs.run_id = (SELECT MAX(run_id) FROM assessment_runs)
+            ORDER BY p.subdistrict_id, prs.risk_score DESC"""):
+        top_projects.setdefault(sid, [])
+        if len(top_projects[sid]) < 3:
+            top_projects[sid].append(pid)
+
+    n = 0
+    for i, (text, suggest, concern, lh, imp, status_, days_ago) in enumerate(DEMO_FEEDBACK):
+        sid = sorted(auditors)[i % len(auditors)]
+        projects = top_projects.get(sid)
+        if not projects:
+            continue
+        # กระจายให้แต่ละตำบลได้หลายโครงการ (i วนข้ามตำบลทีละ len(auditors) จึงหารก่อนค่อย mod)
+        project_id = projects[(i // len(auditors)) % len(projects)]
+        ts = (datetime.now() - timedelta(days=days_ago)).strftime("%Y-%m-%d %H:%M:%S")
+        submitted_at = ts if status_ in ("submitted", "resolved") else None
+        resolved_at = ts if status_ == "resolved" else None
+        cur.execute("""INSERT INTO auditor_feedback
+            (project_id, user_id, feedback_text, concern_level, likelihood_score, impact_score,
+             suggestions, status, created_at, updated_at, submitted_at, resolved_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (project_id, auditors[sid], text, concern, lh, imp,
+                     suggest, status_, ts, ts, submitted_at, resolved_at))
+        n += 1
+    log(f"auditor feedback (demo): {n} รายการ กระจาย {len(auditors)} ตำบล ครบสถานะ draft/submitted/resolved")
+
+# ---------------------------------------------------------------------------
 # 7. Validation (§9.5 + §11.5)
 # ---------------------------------------------------------------------------
 
@@ -1079,6 +1153,16 @@ def validate(cur):
     check("9) 5×5 matrix ครบถ้วน (computable→มีค่า & score=โอกาส×ผลกระทบ; ไม่ computable→NULL)",
           bad_matrix == 0, f"แถวผิด {bad_matrix}")
 
+    # 10) demo feedback ครบทุกสถานะ, concern อยู่ในชุดที่ API รับ, และ FK ไปโครงการ/ผู้ใช้จริง
+    n_fb = cur.execute("SELECT COUNT(*) FROM auditor_feedback").fetchone()[0]
+    n_fb_status = cur.execute(
+        "SELECT COUNT(DISTINCT status) FROM auditor_feedback").fetchone()[0]
+    n_fb_bad_concern = cur.execute("""SELECT COUNT(*) FROM auditor_feedback
+        WHERE concern_level NOT IN ('low','medium','high')""").fetchone()[0]
+    check("10) auditor feedback (demo) มีข้อมูล ครบ 3 สถานะ และ concern อยู่ในชุด low/medium/high",
+          n_fb > 0 and n_fb_status == 3 and n_fb_bad_concern == 0,
+          f"rows={n_fb}, statuses={n_fb_status}, concern ผิด={n_fb_bad_concern}")
+
     return ok
 
 
@@ -1159,6 +1243,7 @@ def main():
     run_id = cur.lastrowid
     run_project_engine(cur, run_id)
     run_annual_engine(cur, run_id)
+    seed_auditor_feedback(cur)  # หลัง engine — เลือกโครงการจาก risk score จริง
     con.commit()
 
     print("[5/5] Validation (§9.5)")
