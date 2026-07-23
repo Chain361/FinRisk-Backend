@@ -7,4 +7,9 @@ pydantic==2.*
 httpx==0.27.*        # ใช้โดย fastapi.testclient
 pytest==8.*
 
+# Data extraction / ocr_pipeline
+pdfplumber>=0.11
+rapidfuzz>=3.0
+
 # หมายเหตุ: seed_database.py ใช้ Python stdlib เท่านั้น (ไม่ต้องมี package)
+

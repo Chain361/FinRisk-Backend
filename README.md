@@ -8,6 +8,63 @@
 
 ---
 
+## 🚀 How to Run for Demo & Pipeline CLI
+
+### ⚙️ 1. Master Pipeline ([run_pipeline.py](file:///c:/Users/Windows%2010/Desktop/data_modelling/run_pipeline.py))
+สำหรับผู้รัน demo หรือประมวลผลข้อมูลตั้งแต่ต้นจนจบ — Pipeline ทั้งหมด (OCR → ตรวจคุณภาพ/Validation → Promote ข้อมูลลง Master CSV → ลงฐานข้อมูล → คำนวณความเสี่ยง) รวมอยู่ในคำสั่งเดียว:
+
+```bash
+pip install -r requirements.txt
+python run_pipeline.py
+```
+
+ถ้าต้องการ OCR สดจาก PDF ให้สร้างไฟล์ `.env` ที่ root ของ repo (ไม่มีก็รันได้ — ระบบจะใช้ OCR cache เดิมอัตโนมัติ):
+```env
+TYPHOON_OCR_API_KEY=<คีย์ของคุณ>   # สมัครฟรีที่ opentyphoon.ai
+```
+
+#### Flag และ Options ของ `run_pipeline.py`:
+* **`python run_pipeline.py`** : รันกระบวนการแบบครบวงจร (Batch OCR → Validate → Promote ลง Master CSV → Seed DB)
+* **`python run_pipeline.py --dry-run`** : ทดลองรัน OCR + Validate เท่านั้น **โดยไม่เขียน/แก้ไข** DB หรือ Master CSV
+* **`python run_pipeline.py --include-needs-review`** : Promote เอกสารที่มีสถานะ `needs_review` ลง DB/CSV ด้วย (หลังผ่านการตรวจสอบใน `ocr_pipeline/work/<run_id>/review/queue.csv` แล้ว)
+* **`python run_pipeline.py --include-fails`** : Promote ข้อมูลทั้งหมดรวมถึงเอกสารที่ไม่ผ่าน Validation (ใช้เพื่อการทดสอบ/Debugging)
+* **`python run_pipeline.py --input-dir <folder>`** : ระบุโฟลเดอร์เก็บไฟล์ PDF + `batch.csv` (default: `raw_financial_statements/`)
+* **`python run_pipeline.py --skip-backup`** : ข้ามการสร้างไฟล์สำรอง (`.bak`) ของ `fraud_risk.db` และ Master CSV
+* **`python run_pipeline.py --enable-rag`** : รัน Law RAG plugin (ปัจจุบันเป็น stub)
+
+> 💡 **ระบบความปลอดภัยข้อมูล (Auto-Backup & Rollback):** `run_pipeline.py` จะสร้างไฟล์สำรองแบบติดประทับเวลา (`.bak.YYYYMMDD_HHMMSS`) ของ DB และ Master CSV ก่อนเริ่มเขียนเสมอ หากขั้นตอนใดล้มเหลว ระบบจะทำ **Auto-Rollback** คืนค่าข้อมูลทันทีเพื่อป้องกันแถวข้อมูลแตกหัก
+
+#### 🛠️ Troubleshooting `run_pipeline.py`
+
+| อาการ | สาเหตุ/ทางแก้ |
+|---|---|
+| ขึ้นว่าไม่มี poppler / pdftoppm | ไม่ต้องแก้ถ้ามี OCR cache (ระบบ fallback ให้เอง) — ถ้าต้อง OCR สดบน Windows: ดาวน์โหลด [poppler-windows](https://github.com/oschwartz10612/poppler-windows/releases) แล้วเพิ่ม `Library\bin` ลง PATH หรือแค่เปิด Docker Desktop ไว้ ระบบจะสลับไปรันใน container ให้ |
+| `circuit breaker: ไม่มีเอกสารใดผ่าน gate` | ทุกไฟล์ fail/needs_review — เปิด `ocr_pipeline/work/<run_id>/review/queue.csv` ตรวจแล้วรันใหม่ด้วย `--include-needs-review` หรือ `--include-fails` |
+| pipeline ล้มกลางทาง | ระบบ rollback `fraud_risk.db` + master CSV ให้อัตโนมัติ — ดูสาเหตุใน `pipeline_run.log` |
+| อยากดูผลรันย้อนหลัง | เปิด `pipeline_run.log` (สรุปทุกครั้งที่รัน) |
+
+---
+
+### 🗄️ 2. Standalone Database Seeding ([seed_database.py](file:///c:/Users/Windows%2010/Desktop/data_modelling/seed_database.py))
+สามารถรัน `seed_database.py` แยกต่างหากได้ตามปกติโดยไม่ต้องรัน `run_pipeline.py` (ใช้กรณีที่มีไฟล์ Master CSV ใน `standardized_data/` เรียบร้อยแล้ว และต้องการสร้าง/Re-build SQLite DB + รัน Risk Engine เท่านั้น)
+
+```bash
+# สร้าง/Re-seed ฐานข้อมูลใหม่จาก Master CSV (ลบ DB เก่าและสร้างใหม่)
+python seed_database.py --force
+
+# สร้างฐานข้อมูลลงในไฟล์ DB ชื่ออื่น
+python seed_database.py --db my_custom_risk.db
+```
+
+#### Flag และ Options ของ `seed_database.py`:
+* **`python seed_database.py`** : อ่านไฟล์ Master CSV จาก `standardized_data/` เพื่อสร้าง schema, seed ข้อมูล, รัน risk engine และทำการ validation
+* **`python seed_database.py --force`** : ลบไฟล์ `fraud_risk.db` เดิมก่อนสร้างใหม่ (หากมี DB เดิมอยู่แล้วและไม่ใส่ `--force` สคริปต์จะแจ้งเตือนและหยุดทำงาน)
+* **`python seed_database.py --db <path>`** : ระบุ path/filename ของไฟล์ SQLite DB ปลายทาง (default: `fraud_risk.db`)
+
+> 📌 `seed_database.py` ใช้ **Python Standard Library ล้วน** (ไม่ต้อง `pip install` packages เพิ่มเติม)
+
+---
+
 ## 1. อ่านอะไรก่อน (5 นาทีแรก)
 
 | อยากรู้เรื่อง | เปิดไฟล์ |
@@ -35,7 +92,7 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
 # 3) สร้างฐานข้อมูล + seed ข้อมูล + รัน risk engine ครั้งแรก
-python seed_database.py            # ได้ไฟล์ fraud_risk.db
+python seed_database.py --force    # ได้ไฟล์ fraud_risk.db
 
 # 4) รัน API
 uvicorn src.main:app --reload
@@ -43,8 +100,6 @@ uvicorn src.main:app --reload
 
 เปิดเอกสาร API อัตโนมัติที่ **http://127.0.0.1:8000/docs**
 ตรวจสุขภาพระบบที่ **http://127.0.0.1:8000/health**
-
-> `seed_database.py` ใช้ **Python stdlib ล้วน** (ไม่ต้อง `pip install`) — ตัว API เท่านั้นที่ต้องใช้ `requirements.txt`
 
 ---
 
