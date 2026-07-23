@@ -29,29 +29,34 @@ class LoginResponse(BaseModel):
     user: UserOut
 
 
-class AuditorFeedbackIn(BaseModel):
-    project_id: str
-    feedback_text: str
-    concern_level: Literal["low", "medium", "high"] | None = None
-    likelihood_score: int | None = Field(default=None, ge=1, le=5)
-    impact_score: int | None = Field(default=None, ge=1, le=5)
-    suggestions: str | None = None
-    status: Literal["draft", "submitted"] = "draft"
+AssignmentPriority = Literal["low", "normal", "high"]
+AssignmentStatus = Literal[
+    "waiting_acceptance",
+    "accepted",
+    "in_progress",
+    "clarification_needed",
+    "ready_for_review",
+    "under_review",
+    "revision_requested",
+    "completed",
+]
 
 
-class AuditorFeedbackOut(BaseModel):
-    feedback_id: int
+class AssignmentCreate(BaseModel):
     project_id: str
-    auditor_username: str
-    auditor_name: str | None = None
-    feedback_text: str
-    concern_level: str | None = None
-    likelihood_score: int | None = None
-    impact_score: int | None = None
-    risk_score: int | None = None
-    suggestions: str | None = None
-    status: str
-    created_at: str
-    updated_at: str
-    submitted_at: str | None = None
-    resolved_at: str | None = None
+    assignee_id: int
+    priority: AssignmentPriority = "normal"
+    note: str = Field(min_length=1, max_length=5000)
+    due_date: str | None = None
+
+
+class AssignmentUpdate(BaseModel):
+    assignee_id: int | None = None
+    priority: AssignmentPriority | None = None
+    note: str | None = Field(default=None, min_length=1, max_length=5000)
+    due_date: str | None = None
+
+
+class AssignmentStatusUpdate(BaseModel):
+    status: AssignmentStatus
+    note: str | None = Field(default=None, max_length=5000)
