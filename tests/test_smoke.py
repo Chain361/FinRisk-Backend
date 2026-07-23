@@ -103,3 +103,60 @@ def test_roles_seeded():
 def test_wrong_password():
     r = client.post("/auth/login", json={"username": "admin", "password": "nope"})
     assert r.status_code == 401
+
+
+def test_auditor_can_create_assignment_with_history():
+    """Assignment data belongs to the backend and is visible to the assignee."""
+    import sqlite3
+
+    from src.config import DB_PATH
+
+    auditor_headers = {"X-Username": "auditor1"}
+    analysts = client.get("/audit/assignments/assignees", headers=auditor_headers)
+    assert analysts.status_code == 200
+    analyst = analysts.json()[0]
+
+    projects = client.get("/projects", headers=auditor_headers).json()
+    project = projects[0]
+    response = client.post(
+        "/audit/assignments",
+        headers=auditor_headers,
+        json={
+            "project_id": str(project["project_id"]),
+            "assignee_id": analyst["user_id"],
+            "priority": "high",
+            "note": "ตรวจสอบเอกสารสัญญา",
+            "due_date": "2026-08-01",
+            "budget_hours": 8,
+            "audit_steps": "ตรวจเอกสารและสรุปผล",
+        },
+    )
+    assert response.status_code == 201
+    assignment_id = response.json()["assignment_id"]
+
+    try:
+        detail = client.get(f"/audit/assignments/{assignment_id}", headers=auditor_headers)
+        assert detail.status_code == 200
+        assert detail.json()["assignment"]["status"] == "waiting_acceptance"
+        assert detail.json()["status_history"][0]["new_status"] == "waiting_acceptance"
+
+        analyst_headers = {"X-Username": analyst["username"]}
+        mine = client.get("/audit/assignments/my", headers=analyst_headers)
+        assert mine.status_code == 200
+        assert any(item["assignment_id"] == assignment_id for item in mine.json())
+
+        accepted = client.patch(
+            f"/audit/assignments/{assignment_id}/status",
+            headers=analyst_headers,
+            json={"status": "accepted"},
+        )
+        assert accepted.status_code == 200
+        assert accepted.json()["status"] == "accepted"
+    finally:
+        con = sqlite3.connect(str(DB_PATH))
+        try:
+            con.execute("DELETE FROM assignment_status_history WHERE assignment_id = ?", (assignment_id,))
+            con.execute("DELETE FROM assignments WHERE assignment_id = ?", (assignment_id,))
+            con.commit()
+        finally:
+            con.close()

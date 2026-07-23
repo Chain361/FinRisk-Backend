@@ -29,14 +29,15 @@ erDiagram
     vendors ||--o{ projects : wins
     projects ||--o{ project_risk_results : "ผลเช็ค factor"
     projects ||--|| project_risk_scores : "คะแนนรวม"
-    projects ||--o{ audit_assignments : assigned
+    projects ||--o{ assignments : assigned
     projects ||--o{ auditor_feedback : receives
     risk_factors ||--o{ project_risk_results : defines
     risk_factors ||--o{ annual_risk_results : defines
     assessment_runs ||--o{ project_risk_results : produced_in
     assessment_runs ||--o{ annual_risk_results : produced_in
-    users ||--o{ audit_assignments : "auditor/assigner"
-    audit_assignments ||--o{ audit_reports : reports
+    users ||--o{ assignments : "auditor/assigner"
+    assignments ||--o{ assignment_status_history : changes
+    assignments ||--o{ audit_reports : reports
     users ||--o{ auditor_feedback : writes
 ```
 
@@ -336,28 +337,49 @@ CREATE TABLE app_config (
 
 ## 6. โมดูล Audit Workflow (จากสรุป Flow การตรวจสอบ)
 
-### 6.1 `audit_assignments` — ผู้ตรวจสอบโครงการมอบหมายงานให้นักวิเคราะห์ (ขั้นที่ 2)
+### 6.1 `assignments` — ผู้ตรวจสอบโครงการมอบหมายงานให้นักวิเคราะห์ (ขั้นที่ 2)
 
 ```sql
-CREATE TABLE audit_assignments (
+CREATE TABLE assignments (
     assignment_id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id    TEXT NOT NULL REFERENCES projects(project_id),
     assigned_to   INTEGER NOT NULL REFERENCES users(user_id),   -- risk_analyst (นักวิเคราะห์)
     assigned_by   INTEGER NOT NULL REFERENCES users(user_id),   -- project_auditor (ผู้ตรวจสอบโครงการ)
-    priority      TEXT CHECK (priority IN ('low','medium','high')),  -- จัดลำดับตาม risk level
-    status        TEXT NOT NULL DEFAULT 'assigned' CHECK (status IN ('assigned','in_progress','submitted','reviewed')),
+    priority      TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('low','normal','high')),
+    note          TEXT NOT NULL DEFAULT '',
     due_date      TEXT,
-    created_at    TEXT DEFAULT (datetime('now'))
+    budget_hours  REAL,
+    audit_steps   TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'waiting_acceptance' CHECK (status IN (
+        'waiting_acceptance','accepted','in_progress','clarification_needed',
+        'ready_for_review','under_review','revision_requested','completed'
+    )),
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX idx_assign_auditor ON audit_assignments(assigned_to, status);
+CREATE INDEX idx_assignments_assignee_status ON assignments(assigned_to, status);
 ```
 
-### 6.2 `audit_reports` — แบบฟอร์มรายงานผลตรวจ (ขั้นที่ 3 ตรงตามฟอร์มใน flow md)
+### 6.2 `assignment_status_history` — ประวัติการเปลี่ยนสถานะงาน
+
+```sql
+CREATE TABLE assignment_status_history (
+    history_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    assignment_id INTEGER NOT NULL REFERENCES assignments(assignment_id),
+    old_status    TEXT,
+    new_status    TEXT NOT NULL,
+    changed_by    INTEGER NOT NULL REFERENCES users(user_id),
+    note          TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+### 6.3 `audit_reports` — แบบฟอร์มรายงานผลตรวจ (ขั้นที่ 3 ตรงตามฟอร์มใน flow md)
 
 ```sql
 CREATE TABLE audit_reports (
     report_id     INTEGER PRIMARY KEY AUTOINCREMENT,
-    assignment_id INTEGER NOT NULL REFERENCES audit_assignments(assignment_id),
+    assignment_id INTEGER NOT NULL REFERENCES assignments(assignment_id),
     work_process  TEXT,                              -- กระบวนงาน/ภารกิจงาน
     objective     TEXT,                              -- วัตถุประสงค์ของกระบวนงาน
     likelihood    INTEGER CHECK (likelihood BETWEEN 1 AND 5),   -- โอกาส
@@ -691,7 +713,7 @@ Role และสิทธิ์นิยามใน `roles.md` (source of trut
 | admin | ทุกตำบล | ไม่ filter | ทุกสิทธิ์ + แก้ risk_factors, app_config, users |
 | regional_supervisor | ทุกตำบล | ไม่ filter | ดู dashboard ทั้งหมด, ดูทุกโครงการ, กรองตามตำบล, ดูข้อมูลการตรวจสอบสาธารณะ |
 | local_executive | เฉพาะตำบลตนเอง | `WHERE subdistrict_id = :user_subdistrict` | ดู dashboard + โครงการของตำบลตนเอง, ดูข้อมูลการตรวจสอบสาธารณะ |
-| project_auditor | เฉพาะตำบลตนเอง | `WHERE subdistrict_id = :user_subdistrict` | มอบหมายงานตรวจสอบ (audit_assignments), ดูรายงานของทีม, ใช้ chatbot |
+| project_auditor | เฉพาะตำบลตนเอง | `WHERE subdistrict_id = :user_subdistrict` | มอบหมายงานตรวจสอบ (assignments), ดูรายงานของทีม, ใช้ chatbot |
 | risk_analyst | เฉพาะตำบลตนเอง | ตำบลตนเอง + `/audit/assignments` กรอง `assigned_to = :user_id` | ดูโครงการที่ได้รับมอบหมาย, ส่งรายงานผลตรวจ (audit_reports), ใช้ chatbot |
 | public_user | ทุกตำบล | ไม่ filter แต่ **ไม่เห็นข้อมูลที่ถูกปิดไว้** (เช่น /audit/*) — read-only | ดู dashboard, ดูโครงการ, กรองตามตำบล |
 

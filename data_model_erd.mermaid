@@ -108,13 +108,28 @@ erDiagram
         int matrix_score "1-25"
         text risk_band "ต่ำ..สูงมาก"
     }
-    audit_assignments {
+    assignments {
         int assignment_id PK
         text project_id FK
         int assigned_to FK "risk_analyst"
         int assigned_by FK "project_auditor"
         text priority
+        text note
+        text due_date
+        float budget_hours
+        text audit_steps
         text status
+        text created_at
+        text updated_at
+    }
+    assignment_status_history {
+        int history_id PK
+        int assignment_id FK
+        text old_status
+        text new_status
+        int changed_by FK
+        text note
+        text created_at
     }
     audit_reports {
         int report_id PK
@@ -155,13 +170,14 @@ erDiagram
     vendors ||--o{ projects : ""
     projects ||--o{ project_risk_results : ""
     projects ||--o{ project_risk_scores : ""
-    projects ||--o{ audit_assignments : ""
+    projects ||--o{ assignments : ""
     projects ||--o{ auditor_feedback : ""
     risk_factors ||--o{ project_risk_results : ""
     risk_factors ||--o{ annual_risk_results : ""
     assessment_runs ||--o{ project_risk_results : ""
     assessment_runs ||--o{ annual_risk_results : ""
     assessment_runs ||--o{ project_risk_scores : ""
-    users ||--o{ audit_assignments : ""
-    audit_assignments ||--o{ audit_reports : ""
+    users ||--o{ assignments : ""
+    assignments ||--o{ assignment_status_history : ""
+    assignments ||--o{ audit_reports : ""
     users ||--o{ auditor_feedback : ""

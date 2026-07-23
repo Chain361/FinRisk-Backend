@@ -206,21 +206,41 @@ CREATE TABLE app_config (
     description TEXT
 );
 
-CREATE TABLE audit_assignments (
+CREATE TABLE assignments (
     assignment_id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id    TEXT NOT NULL REFERENCES projects(project_id),
     assigned_to   INTEGER NOT NULL REFERENCES users(user_id),
     assigned_by   INTEGER NOT NULL REFERENCES users(user_id),
-    priority      TEXT CHECK (priority IN ('low','medium','high')),
-    status        TEXT NOT NULL DEFAULT 'assigned' CHECK (status IN ('assigned','in_progress','submitted','reviewed')),
+    priority      TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('low','normal','high')),
+    note          TEXT NOT NULL DEFAULT '',
     due_date      TEXT,
-    created_at    TEXT DEFAULT (datetime('now'))
+    budget_hours  REAL,
+    audit_steps   TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'waiting_acceptance' CHECK (status IN (
+        'waiting_acceptance','accepted','in_progress','clarification_needed',
+        'ready_for_review','under_review','revision_requested','completed'
+    )),
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX idx_assign_auditor ON audit_assignments(assigned_to, status);
+CREATE INDEX idx_assignments_assignee_status ON assignments(assigned_to, status);
+CREATE INDEX idx_assignments_project ON assignments(project_id);
+
+CREATE TABLE assignment_status_history (
+    history_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    assignment_id INTEGER NOT NULL REFERENCES assignments(assignment_id),
+    old_status    TEXT,
+    new_status    TEXT NOT NULL,
+    changed_by    INTEGER NOT NULL REFERENCES users(user_id),
+    note          TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_assignment_history_assignment
+    ON assignment_status_history(assignment_id, history_id);
 
 CREATE TABLE audit_reports (
     report_id     INTEGER PRIMARY KEY AUTOINCREMENT,
-    assignment_id INTEGER NOT NULL REFERENCES audit_assignments(assignment_id),
+    assignment_id INTEGER NOT NULL REFERENCES assignments(assignment_id),
     work_process  TEXT,
     objective     TEXT,
     likelihood    INTEGER CHECK (likelihood BETWEEN 1 AND 5),

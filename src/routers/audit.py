@@ -1,55 +1,279 @@
 # -*- coding: utf-8 -*-
-"""
-/audit — งานตรวจสอบ (assignment) และรายงานผล (audit_report / feedback)
-
-Flow (ตาม roles.md):
-  project_auditor มอบหมายงาน -> risk_analyst รับงาน -> ส่งรายงานผล
-หมายเหตุ: ตาราง audit_assignments / audit_reports / auditor_feedback ยังว่างใน seed
-scaffold นี้แค่วาง endpoint โครงไว้ ปรับ business logic ตามจริงภายหลัง
-"""
+"""Audit assignments, workflow history, feedback, and access-log endpoints."""
 import sqlite3
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ..auth import require_roles, scope_subdistrict_ids
 from ..database import get_db, rows_to_dicts
+from ..schemas import AssignmentCreate, AssignmentStatusUpdate, AssignmentUpdate
 
 router = APIRouter(prefix="/audit", tags=["audit"])
 
+ASSIGNMENT_STATUSES = {
+    "waiting_acceptance",
+    "accepted",
+    "in_progress",
+    "clarification_needed",
+    "ready_for_review",
+    "under_review",
+    "revision_requested",
+    "completed",
+}
+ANALYST_TRANSITIONS = {
+    "waiting_acceptance": {"accepted"},
+    "accepted": {"in_progress"},
+    "in_progress": {"clarification_needed", "ready_for_review"},
+    "clarification_needed": {"in_progress"},
+    "revision_requested": {"in_progress"},
+}
+REVIEWER_TRANSITIONS = {
+    "ready_for_review": {"under_review"},
+    "under_review": {"revision_requested", "completed"},
+}
+ASSIGNMENT_SELECT = """
+    SELECT a.*, p.project_name, p.subdistrict_id,
+           assignee.username AS assignee_username,
+           assignee.display_name AS assignee_display_name,
+           assigner.username AS assigned_by_username,
+           assigner.display_name AS assigned_by_display_name
+    FROM assignments a
+    JOIN projects p ON p.project_id = a.project_id
+    JOIN users assignee ON assignee.user_id = a.assigned_to
+    JOIN users assigner ON assigner.user_id = a.assigned_by
+"""
 
-@router.get("/assignments")
-def my_assignments(
-    user: dict = Depends(require_roles("admin", "regional_supervisor",
-                                       "project_auditor", "risk_analyst")),
-    conn: sqlite3.Connection = Depends(get_db),
-):
-    """risk_analyst เห็นเฉพาะงานที่ได้รับมอบหมาย (View Assigned Projects);
-    project_auditor/admin/regional_supervisor เห็นทั้งหมดในขอบเขตตำบลของตน (scope guard)"""
+
+def _project_in_scope(conn: sqlite3.Connection, project_id: str, user: dict) -> sqlite3.Row:
+    project = conn.execute(
+        "SELECT project_id, subdistrict_id FROM projects WHERE project_id = ?",
+        (project_id,),
+    ).fetchone()
+    if project is None:
+        raise HTTPException(status_code=404, detail="ไม่พบโครงการ")
+    scope = scope_subdistrict_ids(conn, user)
+    if scope is not None and project["subdistrict_id"] not in scope:
+        raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์เข้าถึงโครงการนอกพื้นที่ของคุณ")
+    return project
+
+
+def _assignment_in_scope(conn: sqlite3.Connection, assignment_id: int, user: dict) -> sqlite3.Row:
+    assignment = conn.execute(
+        """SELECT a.*, p.subdistrict_id
+           FROM assignments a JOIN projects p ON p.project_id = a.project_id
+           WHERE a.assignment_id = ?""",
+        (assignment_id,),
+    ).fetchone()
+    if assignment is None:
+        raise HTTPException(status_code=404, detail="ไม่พบงานที่มอบหมาย")
+    if user["role"] == "risk_analyst":
+        if assignment["assigned_to"] != user["user_id"]:
+            raise HTTPException(status_code=403, detail="เห็นได้เฉพาะงานที่ได้รับมอบหมาย")
+        return assignment
+    scope = scope_subdistrict_ids(conn, user)
+    if scope is not None and assignment["subdistrict_id"] not in scope:
+        raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์เข้าถึงงานนอกพื้นที่ของคุณ")
+    return assignment
+
+
+def _assignee_for_project(conn: sqlite3.Connection, assignee_id: int, project: sqlite3.Row) -> sqlite3.Row:
+    assignee = conn.execute(
+        "SELECT user_id, role, subdistrict_id FROM users WHERE user_id = ?",
+        (assignee_id,),
+    ).fetchone()
+    if assignee is None or assignee["role"] != "risk_analyst":
+        raise HTTPException(status_code=422, detail="ผู้รับงานต้องเป็น risk_analyst")
+    if assignee["subdistrict_id"] != project["subdistrict_id"]:
+        raise HTTPException(status_code=422, detail="ผู้รับงานต้องอยู่ในพื้นที่เดียวกับโครงการ")
+    return assignee
+
+
+def _assignment_detail(conn: sqlite3.Connection, assignment_id: int) -> dict:
+    row = conn.execute(
+        ASSIGNMENT_SELECT + " WHERE a.assignment_id = ?",
+        (assignment_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="ไม่พบงานที่มอบหมาย")
+    return dict(row)
+
+
+def _visible_assignments(conn: sqlite3.Connection, user: dict) -> list[dict]:
     if user["role"] == "risk_analyst":
         rows = conn.execute(
-            """SELECT a.*, p.project_name
-               FROM audit_assignments a JOIN projects p ON p.project_id = a.project_id
-               WHERE a.assigned_to = ? ORDER BY a.created_at DESC""",
+            ASSIGNMENT_SELECT + " WHERE a.assigned_to = ? ORDER BY a.created_at DESC",
             (user["user_id"],),
         ).fetchall()
-    else:
-        scope = scope_subdistrict_ids(conn, user)
-        sql = """SELECT a.*, p.project_name
-                 FROM audit_assignments a JOIN projects p ON p.project_id = a.project_id"""
-        params: list = []
-        if scope is not None:
-            sql += " WHERE p.subdistrict_id IN ({})".format(",".join("?" * len(scope)) or "NULL")
-            params = scope
-        rows = conn.execute(sql + " ORDER BY a.created_at DESC", params).fetchall()
+        return rows_to_dicts(rows)
+    scope = scope_subdistrict_ids(conn, user)
+    sql = ASSIGNMENT_SELECT
+    params: list = []
+    if scope is not None:
+        sql += " WHERE p.subdistrict_id IN ({})".format(",".join("?" * len(scope)) or "NULL")
+        params = scope
+    rows = conn.execute(sql + " ORDER BY a.created_at DESC", params).fetchall()
     return rows_to_dicts(rows)
+
+
+@router.get("/assignments/assignees")
+def assignment_assignees(
+    user: dict = Depends(require_roles("admin", "project_auditor")),
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Return risk analysts that the current user may assign work to."""
+    scope = scope_subdistrict_ids(conn, user)
+    where = ["u.role = 'risk_analyst'"]
+    params: list = []
+    if scope is not None:
+        where.append("u.subdistrict_id IN ({})".format(",".join("?" * len(scope)) or "NULL"))
+        params.extend(scope)
+    rows = conn.execute(
+        f"""SELECT u.user_id, u.username, u.display_name, u.subdistrict_id,
+                   COUNT(a.assignment_id) AS active_cases
+            FROM users u
+            LEFT JOIN assignments a ON a.assigned_to = u.user_id
+                AND a.status != 'completed'
+            WHERE {' AND '.join(where)}
+            GROUP BY u.user_id
+            ORDER BY u.display_name, u.username""",
+        params,
+    ).fetchall()
+    return rows_to_dicts(rows)
+
+
+@router.get("/assignments/my")
+def my_assignments(
+    user: dict = Depends(require_roles("admin", "regional_supervisor", "project_auditor", "risk_analyst")),
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Return work visible to the current user; analysts only receive their own work."""
+    return _visible_assignments(conn, user)
+
+
+@router.get("/assignments")
+def list_assignments(
+    user: dict = Depends(require_roles("admin", "regional_supervisor", "project_auditor", "risk_analyst")),
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    return _visible_assignments(conn, user)
+
+
+@router.post("/assignments", status_code=status.HTTP_201_CREATED)
+def create_assignment(
+    payload: AssignmentCreate,
+    user: dict = Depends(require_roles("admin", "project_auditor")),
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    project = _project_in_scope(conn, payload.project_id, user)
+    _assignee_for_project(conn, payload.assignee_id, project)
+    duplicate = conn.execute(
+        "SELECT assignment_id FROM assignments WHERE project_id = ? AND status != 'completed'",
+        (payload.project_id,),
+    ).fetchone()
+    if duplicate:
+        raise HTTPException(status_code=409, detail="โครงการนี้มีงานที่ยังไม่เสร็จสิ้นอยู่แล้ว")
+    cursor = conn.execute(
+        """INSERT INTO assignments
+           (project_id, assigned_to, assigned_by, priority, note, due_date,
+            budget_hours, audit_steps, status)
+           VALUES (?,?,?,?,?,?,?,?, 'waiting_acceptance')""",
+        (payload.project_id, payload.assignee_id, user["user_id"], payload.priority,
+         payload.note, payload.due_date, payload.budget_hours, payload.audit_steps),
+    )
+    assignment_id = cursor.lastrowid
+    conn.execute(
+        """INSERT INTO assignment_status_history
+           (assignment_id, old_status, new_status, changed_by, note)
+           VALUES (?, NULL, 'waiting_acceptance', ?, ?)""",
+        (assignment_id, user["user_id"], "สร้างและมอบหมายงาน"),
+    )
+    conn.commit()
+    return _assignment_detail(conn, assignment_id)
+
+
+@router.get("/assignments/{assignment_id}")
+def get_assignment(
+    assignment_id: int,
+    user: dict = Depends(require_roles("admin", "regional_supervisor", "project_auditor", "risk_analyst")),
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    _assignment_in_scope(conn, assignment_id, user)
+    history = conn.execute(
+        """SELECT h.*, u.username AS changed_by_username,
+                  u.display_name AS changed_by_display_name
+           FROM assignment_status_history h
+           JOIN users u ON u.user_id = h.changed_by
+           WHERE h.assignment_id = ? ORDER BY h.history_id DESC""",
+        (assignment_id,),
+    ).fetchall()
+    return {"assignment": _assignment_detail(conn, assignment_id), "status_history": rows_to_dicts(history)}
+
+
+@router.patch("/assignments/{assignment_id}")
+def update_assignment(
+    assignment_id: int,
+    payload: AssignmentUpdate,
+    user: dict = Depends(require_roles("admin", "project_auditor")),
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    assignment = _assignment_in_scope(conn, assignment_id, user)
+    if assignment["status"] != "waiting_acceptance":
+        raise HTTPException(status_code=409, detail="แก้ไขรายละเอียดหรือย้ายผู้รับผิดชอบได้ก่อนผู้รับงานตอบรับเท่านั้น")
+    values = payload.model_dump(exclude_unset=True)
+    if not values:
+        return _assignment_detail(conn, assignment_id)
+    if "assignee_id" in values:
+        project = _project_in_scope(conn, assignment["project_id"], user)
+        _assignee_for_project(conn, values["assignee_id"], project)
+        values["assigned_to"] = values.pop("assignee_id")
+    columns = list(values)
+    set_clause = ", ".join(f"{column} = ?" for column in columns)
+    conn.execute(
+        f"UPDATE assignments SET {set_clause}, updated_at = datetime('now') WHERE assignment_id = ?",
+        [values[column] for column in columns] + [assignment_id],
+    )
+    conn.commit()
+    return _assignment_detail(conn, assignment_id)
+
+
+@router.patch("/assignments/{assignment_id}/status")
+def update_assignment_status(
+    assignment_id: int,
+    payload: AssignmentStatusUpdate,
+    user: dict = Depends(require_roles("admin", "project_auditor", "risk_analyst")),
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    assignment = _assignment_in_scope(conn, assignment_id, user)
+    current_status = assignment["status"]
+    next_status = payload.status
+    if current_status == next_status:
+        return _assignment_detail(conn, assignment_id)
+    if user["role"] == "risk_analyst":
+        allowed = ANALYST_TRANSITIONS.get(current_status, set())
+    elif user["role"] == "project_auditor":
+        allowed = REVIEWER_TRANSITIONS.get(current_status, set())
+    else:
+        allowed = ASSIGNMENT_STATUSES - {current_status}
+    if next_status not in allowed:
+        raise HTTPException(status_code=409, detail=f"ไม่สามารถเปลี่ยนสถานะจาก {current_status} เป็น {next_status} ได้")
+    conn.execute(
+        "UPDATE assignments SET status = ?, updated_at = datetime('now') WHERE assignment_id = ?",
+        (next_status, assignment_id),
+    )
+    conn.execute(
+        """INSERT INTO assignment_status_history
+           (assignment_id, old_status, new_status, changed_by, note)
+           VALUES (?,?,?,?,?)""",
+        (assignment_id, current_status, next_status, user["user_id"], payload.note),
+    )
+    conn.commit()
+    return _assignment_detail(conn, assignment_id)
 
 
 @router.get("/feedback/{project_id}")
 def project_feedback(
     project_id: str,
-    # View Public Audit Information ตาม roles.md — public_user ไม่มีสิทธิ์ (ข้อมูลที่ถูกปิดไว้)
-    _: dict = Depends(require_roles("admin", "regional_supervisor", "local_executive",
-                                    "project_auditor", "risk_analyst")),
+    _: dict = Depends(require_roles("admin", "regional_supervisor", "local_executive", "project_auditor", "risk_analyst")),
     conn: sqlite3.Connection = Depends(get_db),
 ):
     rows = conn.execute(
@@ -63,18 +287,16 @@ def project_feedback(
 
 @router.get("/access-log")
 def access_log(
-    _: dict = Depends(require_roles("admin")),  # เฉพาะผู้ดูแลระบบ — log การเข้าถึงเป็นข้อมูลอ่อนไหว
+    _: dict = Depends(require_roles("admin")),
     conn: sqlite3.Connection = Depends(get_db),
     username: str | None = None,
     action: str | None = None,
     resource_type: str | None = None,
-    date_from: str | None = None,  # 'YYYY-MM-DD' (รวม)
-    date_to: str | None = None,    # 'YYYY-MM-DD' (รวมทั้งวัน)
+    date_from: str | None = None,
+    date_to: str | None = None,
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ):
-    """บันทึกการเข้าถึงของผู้ใช้ (accountability trail) — กรอง + แบ่งหน้า
-    คืน {items, total, limit, offset}; เรียงใหม่สุดก่อน"""
     where: list[str] = []
     params: list = []
     if username:
@@ -93,10 +315,7 @@ def access_log(
         where.append("created_at < date(?, '+1 day')")
         params.append(date_to)
     clause = (" WHERE " + " AND ".join(where)) if where else ""
-
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM access_log{clause}", params
-    ).fetchone()[0]
+    total = conn.execute(f"SELECT COUNT(*) FROM access_log{clause}", params).fetchone()[0]
     rows = conn.execute(
         f"""SELECT log_id, username, role, action, method, path, resource_type,
                    resource_id, status_code, ip, user_agent, created_at
@@ -104,15 +323,4 @@ def access_log(
             ORDER BY log_id DESC LIMIT ? OFFSET ?""",
         [*params, limit, offset],
     ).fetchall()
-    return {
-        "items": rows_to_dicts(rows),
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-    }
-
-
-# ตัวอย่าง endpoint ที่จำกัดสิทธิ์ — เปิดใช้เมื่อพร้อมทำ business logic เขียนข้อมูล
-# @router.post("/assignments")
-# def create_assignment(user: dict = Depends(require_roles("project_auditor", "admin")), ...):
-#     ...
+    return {"items": rows_to_dicts(rows), "total": total, "limit": limit, "offset": offset}
