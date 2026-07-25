@@ -29,6 +29,34 @@ class LoginResponse(BaseModel):
     user: UserOut
 
 
+class AuditorFeedbackIn(BaseModel):
+    project_id: str
+    feedback_text: str
+    concern_level: Literal["low", "medium", "high"] | None = None
+    likelihood_score: int | None = Field(default=None, ge=1, le=5)
+    impact_score: int | None = Field(default=None, ge=1, le=5)
+    suggestions: str | None = None
+    status: Literal["draft", "submitted"] = "draft"
+
+
+class AuditorFeedbackOut(BaseModel):
+    feedback_id: int
+    project_id: str
+    auditor_username: str
+    auditor_name: str | None = None
+    feedback_text: str
+    concern_level: str | None = None
+    likelihood_score: int | None = None
+    impact_score: int | None = None
+    risk_score: int | None = None
+    suggestions: str | None = None
+    status: str
+    created_at: str
+    updated_at: str
+    submitted_at: str | None = None
+    resolved_at: str | None = None
+
+
 AssignmentPriority = Literal["low", "normal", "high"]
 AssignmentStatus = Literal[
     "waiting_acceptance",
