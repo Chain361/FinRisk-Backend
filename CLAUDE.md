@@ -6,31 +6,47 @@
 
 Backend ของ **Local Budget Fraud Risk & Document Intelligence Assistant** —
 ประเมินความเสี่ยงทุจริตงบประมาณของเทศบาลตำบล จากข้อมูลจัดซื้อจัดจ้าง + งบการเงิน
-Stack: **Python 3.10+ / FastAPI / SQLite (sqlite3 stdlib)** ไม่มี ORM
+Stack: **Python 3.10+ / FastAPI / PostgreSQL (psycopg 3)** ไม่มี ORM
 
 ## คำสั่งที่ใช้บ่อย
 
 ```bash
-pip install -r requirements.txt        # ติดตั้ง dependency ของ API
-python seed_database.py                # (สร้างใหม่) DB + seed + risk engine + validate
-python seed_database.py --force        # ลบ DB เดิมแล้วสร้างใหม่
+createdb finrisk_dev                   # ครั้งแรกเท่านั้น (ต้องมี postgres รันอยู่)
+pip install -r requirements.txt        # ติดตั้ง dependency ของ API (รวม psycopg)
+python seed_database.py                # สร้าง schema + seed + risk engine + validate
+python seed_database.py --force        # ลบตารางเดิมทั้งหมดแล้วสร้างใหม่
 uvicorn src.main:app --reload          # รัน API dev server → /docs
 pytest -q                              # smoke test
 ```
 
+ตั้ง `DATABASE_URL` ถ้าไม่ใช้ default (`postgresql://localhost/finrisk_dev`) — ทั้ง API และ
+`seed_database.py` อ่านค่าเดียวกันจาก `src/config.py`
+
 ## สถาปัตยกรรม
 
 - `src/main.py` — สร้าง `app`, ผูก CORS, include router ทั้งหมด, `/health` + `/`
-- `src/config.py` — path DB (`FRAUD_RISK_DB`), CORS origin อ่านจาก env มี default
-- `src/database.py` — `get_db()` เป็น FastAPI dependency; `row_factory = sqlite3.Row`;
-  helper `rows_to_dicts()` แปลงเป็น JSON-serializable
-- `src/auth.py` — mock login + `get_current_user`, `require_roles(...)`, `scope_subdistrict_ids(...)`
+- `src/config.py` — `DATABASE_URL` (env, มี default local dev), CORS origin อ่านจาก env มี default
+- `src/database.py` — `get_db()` เป็น FastAPI dependency คืน psycopg connection;
+  `Connection`/`Cursor` แปลง `?` placeholder (สไตล์เดิมของทั้ง repo) เป็น `%s` ให้อัตโนมัติ;
+  `SqliteLikeRow` เลียนแบบ `sqlite3.Row` (index ตัวเลข + key ชื่อคอลัมน์ + iterate เป็นค่า)
+  เพื่อให้ query เดิมทั่ว repo ใช้ต่อได้โดยไม่ต้องแก้ทีละจุด; helper `rows_to_dicts()`
+- `src/auth.py` — JWT login (bcrypt + PyJWT) + `get_current_user`, `require_roles(...)`, `scope_subdistrict_ids(...)`
 - `src/schemas.py` — Pydantic model (request/response)
-- `src/routers/*.py` — endpoint แยกตามโดเมน (auth, subdistricts, projects, risk, audit)
+- `src/routers/*.py` — endpoint แยกตามโดเมน (auth, subdistricts, projects, risk, audit, admin)
 
-**Data flow:** CSV (`standardized_data/`) → `seed_database.py` เขียนลง `fraud_risk.db`
+**Data flow:** CSV (`standardized_data/`) → `seed_database.py` เขียนลง PostgreSQL (ตาม `DATABASE_URL`)
 → risk engine ใน seed คำนวณและเขียนตาราง `*_risk_results` / `project_risk_scores`
-→ FastAPI **อ่านอย่างเดียว** จาก DB (ยังไม่มี endpoint ที่รัน engine)
+→ FastAPI ส่วนใหญ่ **อ่านอย่างเดียว** จาก DB ยกเว้น `src/routers/admin.py`
+(`POST /admin/data/upload` นำเข้า CSV โครงการ/งบการเงินของตำบลที่มีอยู่แล้ว,
+`POST /admin/risk-engine/run` สั่งคำนวณ risk score ใหม่) — ทั้งสอง endpoint เรียก
+`seed_vendors`/`seed_projects`/`seed_financial`/`run_project_engine`/`run_annual_engine`
+จาก `seed_database.py` ตรงๆ (import เป็น top-level module จาก repo root) **ห้ามก็อปโค้ด
+มาเขียนซ้ำใน router** เพราะ logic ต้องอยู่ที่เดียวตามกติกาด้านล่าง
+
+**เขียน SQL ใหม่:** ใช้ `?` placeholder แบบเดิมได้เลย (แปลงเป็น `%s` อัตโนมัติที่ `src/database.py`)
+แต่ต้องรู้ 3 จุดต่างจาก SQLite เดิม: (1) ไม่มี `.lastrowid` — ใช้ `INSERT ... RETURNING <pk>` แล้ว
+`.fetchone()["<pk>"]` (2) เวลาให้ใช้ SQL function `now_text()` แทน `datetime('now')` (นิยามไว้ใน DDL
+ของ `seed_database.py`) (3) ไม่มี `INSERT OR IGNORE`/`OR REPLACE` — ใช้ `ON CONFLICT (...) DO NOTHING`
 
 ## คอนเวนชันการเขียนโค้ด
 
@@ -48,16 +64,17 @@ pytest -q                              # smoke test
 - อย่าแก้ตรรกะ risk ในโค้ด API — logic ทั้งหมดอยู่ใน `seed_database.py`
   (`run_project_engine`, `run_annual_engine`) แก้ที่นั่นแล้วรัน seed ใหม่
 
-## Auth (mock) — ⚠️ ต้องแทนที่ก่อน production
+## Auth (JWT)
 
-ตอนนี้เป็น mock ล้วน:
-- รหัสผ่านทุก user = `password123`, เก็บเป็น `sha256` **ไม่มี salt**
-- "token" ที่ `/auth/login` คืน = username; endpoint ที่ต้อง auth อ่าน username จาก
-  header `X-Username` (ไม่ใช่ JWT)
-
-เมื่อทำ auth จริง: เปลี่ยน hashing เป็น **bcrypt/argon2**, ออก **JWT/session**,
-และแก้ `get_current_user` ให้ถอด token จาก `Authorization: Bearer ...`
-โครง `require_roles(...)` และ scope guard นำมาใช้ต่อได้เลย
+- รหัสผ่านเก็บเป็น **bcrypt hash** (มี salt ในตัว) — mock user ทุกคนยังใช้ `password123` เหมือนเดิม
+- `/auth/login` ออก **JWT access token** (HS256, อายุ `JWT_EXPIRE_MINUTES` ค่า default 480 นาที)
+  endpoint ที่ต้อง auth อ่าน token จาก header `Authorization: Bearer <token>`
+- ⚠️ **`JWT_SECRET`**: ต้องตั้ง env var เป็นค่าสุ่มยาวๆ ก่อนขึ้น production — ถ้ายังใช้ default
+  จะมี warning log ตอน startup (`src/main.py`)
+- ⚠️ **ช่วงเปลี่ยนผ่าน**: `get_current_user` ยังรับ header `X-Username` แบบเดิม (ไม่ verify ลายเซ็น)
+  เป็น fallback เพราะ frontend ที่ deploy อยู่ยังส่ง header นี้อยู่ — ลบ fallback นี้ทิ้งได้เมื่อ
+  frontend เปลี่ยนไปส่ง `Authorization: Bearer` ครบแล้ว (ดู FinRisk-Frontend issue #28)
+  ทุกครั้งที่ path นี้ถูกใช้จะมี warning log ให้เห็น
 
 ## ข้อควรระวังเรื่องข้อมูล (มีผลต่อ logic)
 
@@ -71,13 +88,14 @@ pytest -q                              # smoke test
 ## Definition of done
 
 - โค้ดใหม่ที่แตะข้อมูลตำบล **ผ่าน scope guard**
-- `pytest -q` ผ่าน (เพิ่มเทสต์ใน `tests/` เมื่อเพิ่ม endpoint)
+- `pytest -q` ผ่าน (เพิ่มเทสต์ใน `tests/` เมื่อเพิ่ม endpoint) — ต้องมี postgres รันอยู่ + สร้าง
+  `finrisk_dev` แล้ว seed ไว้ก่อน
 - ถ้าแก้ schema DB ต้องอัปเดตทั้ง `seed_database.py`, `data_model_design.md`, และ ERD
-- ไม่ commit `fraud_risk.db` (อยู่ใน `.gitignore` — สร้างใหม่ได้จาก seed)
 
 ## สิ่งที่ยังไม่ทำ
 
-- endpoint สั่งรัน risk engine ใหม่ผ่าน API
+- deploy จริง (Vercel serverless) ยังต้องชี้ `DATABASE_URL` ไป managed Postgres ที่ persistent
+  (เช่น Neon/Supabase/RDS) — ยังไม่ได้ provision
 - ต่อ `ocr_pipeline/` เข้าชั้นเอกสาร — ตอนนี้ `project_documents`/`document_findings`
   เป็น `source='mock'` ทั้งหมด ยังไม่มีแถว `source='ocr'`
 - `GET /audit/feedback` + `GET /audit/feedback/{project_id}` คืน feedback สถานะ `draft`

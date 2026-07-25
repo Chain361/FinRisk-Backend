@@ -11,8 +11,9 @@
   Tier 2: ใช้ OCR cache ใน ocr_pipeline/work/<run_id>/ocr/ → offline 100%
   Tier 3: Docker + --env-file .env (image: fraud-risk-pipeline-v2)
 
-ความปลอดภัยข้อมูล: backup fraud_risk.db + financial_report_ALL_master.csv ก่อนเขียน
-และ auto-rollback ทั้งคู่เมื่อขั้นใดล้มเหลว (กัน DB/CSV แตกแถวกัน)
+ความปลอดภัยข้อมูล: backup financial_report_ALL_master.csv ก่อนเขียน และ auto-rollback
+เมื่อขั้นใดล้มเหลว (กัน CSV แตกแถว) — DB เป็น PostgreSQL แล้ว ยังไม่มี auto-backup/rollback
+(seed_database.py --force ทำ DROP SCHEMA ก่อนสร้างใหม่เสมอ — กู้คืนเองผ่าน pg_dump/pg_restore ถ้าจำเป็น)
 สรุปผลทุกครั้งเขียนลง pipeline_run.log
 """
 import argparse
@@ -30,7 +31,6 @@ sys.stderr.reconfigure(encoding="utf-8")
 REPO_ROOT = os.path.abspath(os.path.dirname(__file__))
 os.chdir(REPO_ROOT)  # path ใน config/pipeline เป็น relative จาก repo root
 
-DB_PATH = os.path.join(REPO_ROOT, "fraud_risk.db")
 MASTER_CSV = os.path.join(REPO_ROOT, "standardized_data", "financial_report_ALL_master.csv")
 LOG_PATH = os.path.join(REPO_ROOT, "pipeline_run.log")
 DEFAULT_INPUT_DIR = os.path.join(REPO_ROOT, "raw_financial_statements")
@@ -130,7 +130,9 @@ def make_backups(skip: bool):
         return {}
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     backups = {}
-    for src in (DB_PATH, MASTER_CSV):
+    log("[backup] ⚠️  DB เป็น PostgreSQL แล้ว (ไม่ใช่ fraud_risk.db) — backup/rollback อัตโนมัติ "
+        "ยังไม่รองรับ Postgres ถ้า pipeline ล้มกลางทางต้องกู้คืน DB เอง (pg_dump/pg_restore)")
+    for src in (MASTER_CSV,):
         if os.path.exists(src):
             dst = f"{src}.bak.{ts}"
             shutil.copy2(src, dst)
@@ -214,12 +216,15 @@ def main() -> int:
 
         # 4. plugins (isolate — plugin พังไม่ต้อง rollback DB ที่ seed สำเร็จแล้ว)
         from ocr_pipeline.plugins import get_plugins
+        from src.database import _connect
         for p in get_plugins():
             if p.is_enabled(args):
                 try:
-                    import sqlite3
-                    with sqlite3.connect(DB_PATH) as conn:
+                    conn = _connect()
+                    try:
                         log(f"[plugin] {p.name()}: {p.run(conn)}")
+                    finally:
+                        conn.close()
                 except Exception as e:
                     log(f"[plugin] {p.name()} ล้มเหลว (ไม่กระทบ DB): {e}")
 

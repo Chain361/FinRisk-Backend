@@ -10,7 +10,7 @@ client = TestClient(app)
 def test_health():
     r = client.get("/health")
     assert r.status_code == 200
-    assert r.json()["db_exists"] is True
+    assert r.json()["db_connected"] is True
 
 
 def test_meta():
@@ -179,15 +179,10 @@ def test_feedback_public_forbidden():
 
 
 def test_roles_seeded():
-    import sqlite3
+    from src.database import db_session
 
-    from src.config import DB_PATH
-
-    con = sqlite3.connect(str(DB_PATH))
-    try:
+    with db_session() as con:
         assert con.execute("SELECT COUNT(*) FROM roles").fetchone()[0] == 6
-    finally:
-        con.close()
 
 
 def test_wrong_password():
@@ -197,9 +192,7 @@ def test_wrong_password():
 
 def test_auditor_can_create_assignment_with_history():
     """Assignment data belongs to the backend and is visible to the assignee."""
-    import sqlite3
-
-    from src.config import DB_PATH
+    from src.database import db_session
 
     auditor_headers = {"X-Username": "auditor1"}
     analysts = client.get("/audit/assignments/assignees", headers=auditor_headers)
@@ -253,10 +246,104 @@ def test_auditor_can_create_assignment_with_history():
         missing = client.get(f"/audit/assignments/{assignment_id}", headers={"X-Username": "admin"})
         assert missing.status_code == 404
     finally:
-        con = sqlite3.connect(str(DB_PATH))
-        try:
+        with db_session() as con:
             con.execute("DELETE FROM assignment_status_history WHERE assignment_id = ?", (assignment_id,))
             con.execute("DELETE FROM assignments WHERE assignment_id = ?", (assignment_id,))
             con.commit()
-        finally:
-            con.close()
+
+
+def test_admin_risk_engine_run_role_gate():
+    admin = {"X-Username": "admin"}
+    before = client.get("/risk/summary", headers=admin).json()["total"]
+
+    r = client.post("/admin/risk-engine/run", headers={"X-Username": "auditor1"})
+    assert r.status_code == 403
+
+    r = client.post("/admin/risk-engine/run", headers=admin)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["project_count"] == before
+    assert body["annual_count"] > 0
+
+    after = client.get("/risk/summary", headers=admin).json()["total"]
+    assert after == before  # แค่รันซ้ำ ไม่ได้เพิ่มโครงการ — จำนวนควรเท่าเดิม
+
+
+def test_admin_data_upload():
+    from src.database import db_session
+
+    admin = {"X-Username": "admin"}
+    thachang = next(
+        s for s in client.get("/subdistricts", headers=admin).json() if s["name_th"] == "ท่าช้าง"
+    )
+    csv_bytes = (
+        "subdistrict,district,province,budget_year,project_id,project_name,project_type,"
+        "dept_name,dept_sub_name,purchase_method,purchase_method_group,announce_date,"
+        "transaction_date,budget_amount,reference_price,contract_value,price_ratio,"
+        "project_status,contract_no,contract_date,contract_finish_date,"
+        "contract_duration_days,contract_status,winner_name,winner_tin,latitude,longitude,"
+        "fraud_risk_flag,fraud_risk_issues,data_quality_note,source_file\n"
+        "ท่าช้าง,บางกล่ำ,สงขลา,2568,TEST-PYTEST-UPLOAD-001,ทดสอบ pytest upload,ซื้อ,"
+        "กองคลัง,,e-bidding,e-bidding,1/10/2568,1/10/2568,500000,495000,490000,0.99,"
+        "เสร็จสิ้น,C-001,1/10/2568,30/10/2568,30,เสร็จสิ้น,บริษัททดสอบ จำกัด,"
+        "1234567890123,-,-,-,-,-,test.csv\n"
+    ).encode("utf-8")
+
+    try:
+        # non-admin ทำไม่ได้
+        r = client.post(
+            "/admin/data/upload",
+            headers={"X-Username": "auditor1"},
+            data={"subdistrict_id": thachang["subdistrict_id"]},
+            files={"projects_csv": ("test.csv", csv_bytes, "text/csv")},
+        )
+        assert r.status_code == 403
+
+        # อัปโหลดสำเร็จ
+        r = client.post(
+            "/admin/data/upload",
+            headers=admin,
+            data={"subdistrict_id": thachang["subdistrict_id"]},
+            files={"projects_csv": ("test.csv", csv_bytes, "text/csv")},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["projects_inserted"] == 1
+        assert body["projects_skipped_duplicate"] == []
+
+        # โครงการเห็นได้ผ่าน endpoint ปกติจริง
+        detail = client.get("/projects/TEST-PYTEST-UPLOAD-001", headers=admin)
+        assert detail.status_code == 200
+
+        # อัปโหลดซ้ำ — ต้องข้าม ไม่ crash
+        r = client.post(
+            "/admin/data/upload",
+            headers=admin,
+            data={"subdistrict_id": thachang["subdistrict_id"]},
+            files={"projects_csv": ("test.csv", csv_bytes, "text/csv")},
+        )
+        assert r.status_code == 200
+        assert r.json()["projects_inserted"] == 0
+        assert r.json()["projects_skipped_duplicate"] == ["TEST-PYTEST-UPLOAD-001"]
+
+        # subdistrict ไม่ตรงกับข้อมูลในไฟล์ → 422
+        pingkhong = next(
+            s for s in client.get("/subdistricts", headers=admin).json() if s["name_th"] == "ปิงโค้ง"
+        )
+        r = client.post(
+            "/admin/data/upload",
+            headers=admin,
+            data={"subdistrict_id": pingkhong["subdistrict_id"]},
+            files={"projects_csv": ("test.csv", csv_bytes, "text/csv")},
+        )
+        assert r.status_code == 422
+
+        # ไม่แนบไฟล์เลย → 422
+        r = client.post(
+            "/admin/data/upload", headers=admin, data={"subdistrict_id": thachang["subdistrict_id"]}
+        )
+        assert r.status_code == 422
+    finally:
+        with db_session() as con:
+            con.execute("DELETE FROM projects WHERE project_id = ?", ("TEST-PYTEST-UPLOAD-001",))
+            con.commit()

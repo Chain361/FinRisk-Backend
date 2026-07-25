@@ -4,7 +4,7 @@
 จากข้อมูลจัดซื้อจัดจ้าง (e-GP) และงบการเงิน โดยรัน "risk engine" ให้คะแนนความเสี่ยง
 รายโครงการและรายปีงบประมาณ แล้วเปิดให้ผู้ใช้แต่ละบทบาทเข้ามาตรวจสอบ/มอบหมายงานต่อ
 
-> Repository นี้เป็น **backend** (Python + FastAPI + SQLite) — คู่มือนี้สำหรับ dev ที่เพิ่งเข้ามาทำงาน
+> Repository นี้เป็น **backend** (Python + FastAPI + PostgreSQL) — คู่มือนี้สำหรับ dev ที่เพิ่งเข้ามาทำงาน
 
 ---
 
@@ -29,10 +29,10 @@ TYPHOON_OCR_API_KEY=<คีย์ของคุณ>   # สมัครฟร�
 * **`python run_pipeline.py --include-needs-review`** : Promote เอกสารที่มีสถานะ `needs_review` ลง DB/CSV ด้วย (หลังผ่านการตรวจสอบใน `ocr_pipeline/work/<run_id>/review/queue.csv` แล้ว)
 * **`python run_pipeline.py --include-fails`** : Promote ข้อมูลทั้งหมดรวมถึงเอกสารที่ไม่ผ่าน Validation (ใช้เพื่อการทดสอบ/Debugging)
 * **`python run_pipeline.py --input-dir <folder>`** : ระบุโฟลเดอร์เก็บไฟล์ PDF + `batch.csv` (default: `raw_financial_statements/`)
-* **`python run_pipeline.py --skip-backup`** : ข้ามการสร้างไฟล์สำรอง (`.bak`) ของ `fraud_risk.db` และ Master CSV
+* **`python run_pipeline.py --skip-backup`** : ข้ามการสร้างไฟล์สำรอง (`.bak`) ของ Master CSV
 * **`python run_pipeline.py --enable-rag`** : รัน Law RAG plugin (ปัจจุบันเป็น stub)
 
-> 💡 **ระบบความปลอดภัยข้อมูล (Auto-Backup & Rollback):** `run_pipeline.py` จะสร้างไฟล์สำรองแบบติดประทับเวลา (`.bak.YYYYMMDD_HHMMSS`) ของ DB และ Master CSV ก่อนเริ่มเขียนเสมอ หากขั้นตอนใดล้มเหลว ระบบจะทำ **Auto-Rollback** คืนค่าข้อมูลทันทีเพื่อป้องกันแถวข้อมูลแตกหัก
+> 💡 **ระบบความปลอดภัยข้อมูล (Auto-Backup & Rollback):** `run_pipeline.py` จะสร้างไฟล์สำรองแบบติดประทับเวลา (`.bak.YYYYMMDD_HHMMSS`) ของ Master CSV ก่อนเริ่มเขียนเสมอ หากขั้นตอนใดล้มเหลว ระบบจะทำ **Auto-Rollback** คืนค่า Master CSV ทันที — **DB เป็น PostgreSQL แล้ว ยังไม่มี auto-backup/rollback** (`seed_database.py --force` ทำ `DROP SCHEMA` ก่อนสร้างใหม่เสมอ กู้คืนเองผ่าน `pg_dump`/`pg_restore` ถ้าจำเป็น)
 
 #### 🛠️ Troubleshooting `run_pipeline.py`
 
@@ -40,28 +40,27 @@ TYPHOON_OCR_API_KEY=<คีย์ของคุณ>   # สมัครฟร�
 |---|---|
 | ขึ้นว่าไม่มี poppler / pdftoppm | ไม่ต้องแก้ถ้ามี OCR cache (ระบบ fallback ให้เอง) — ถ้าต้อง OCR สดบน Windows: ดาวน์โหลด [poppler-windows](https://github.com/oschwartz10612/poppler-windows/releases) แล้วเพิ่ม `Library\bin` ลง PATH หรือแค่เปิด Docker Desktop ไว้ ระบบจะสลับไปรันใน container ให้ |
 | `circuit breaker: ไม่มีเอกสารใดผ่าน gate` | ทุกไฟล์ fail/needs_review — เปิด `ocr_pipeline/work/<run_id>/review/queue.csv` ตรวจแล้วรันใหม่ด้วย `--include-needs-review` หรือ `--include-fails` |
-| pipeline ล้มกลางทาง | ระบบ rollback `fraud_risk.db` + master CSV ให้อัตโนมัติ — ดูสาเหตุใน `pipeline_run.log` |
+| pipeline ล้มกลางทาง | ระบบ rollback master CSV ให้อัตโนมัติ (DB ยังไม่มี auto-rollback — ดู PostgreSQL note ด้านบน) — ดูสาเหตุใน `pipeline_run.log` |
 | อยากดูผลรันย้อนหลัง | เปิด `pipeline_run.log` (สรุปทุกครั้งที่รัน) |
 
 ---
 
 ### 🗄️ 2. Standalone Database Seeding ([seed_database.py](seed_database.py))
-สามารถรัน `seed_database.py` แยกต่างหากได้ตามปกติโดยไม่ต้องรัน `run_pipeline.py` (ใช้กรณีที่มีไฟล์ Master CSV ใน `standardized_data/` เรียบร้อยแล้ว และต้องการสร้าง/Re-build SQLite DB + รัน Risk Engine เท่านั้น)
+สามารถรัน `seed_database.py` แยกต่างหากได้ตามปกติโดยไม่ต้องรัน `run_pipeline.py` (ใช้กรณีที่มีไฟล์ Master CSV ใน `standardized_data/` เรียบร้อยแล้ว และต้องการสร้าง/Re-build ฐานข้อมูล PostgreSQL + รัน Risk Engine เท่านั้น)
 
 ```bash
-# สร้าง/Re-seed ฐานข้อมูลใหม่จาก Master CSV (ลบ DB เก่าและสร้างใหม่)
-python seed_database.py --force
+# สร้าง schema + seed ข้อมูล + รัน risk engine ครั้งแรก
+python seed_database.py
 
-# สร้างฐานข้อมูลลงในไฟล์ DB ชื่ออื่น
-python seed_database.py --db my_custom_risk.db
+# ลบตารางเดิมทั้งหมดแล้วสร้างใหม่จาก Master CSV
+python seed_database.py --force
 ```
 
 #### Flag และ Options ของ `seed_database.py`:
 * **`python seed_database.py`** : อ่านไฟล์ Master CSV จาก `standardized_data/` เพื่อสร้าง schema, seed ข้อมูล, รัน risk engine และทำการ validation
-* **`python seed_database.py --force`** : ลบไฟล์ `fraud_risk.db` เดิมก่อนสร้างใหม่ (หากมี DB เดิมอยู่แล้วและไม่ใส่ `--force` สคริปต์จะแจ้งเตือนและหยุดทำงาน)
-* **`python seed_database.py --db <path>`** : ระบุ path/filename ของไฟล์ SQLite DB ปลายทาง (default: `fraud_risk.db`)
+* **`python seed_database.py --force`** : ลบตารางเดิมทั้งหมด (`DROP SCHEMA public CASCADE`) ก่อนสร้างใหม่
 
-> 📌 `seed_database.py` ใช้ **Python Standard Library ล้วน** (ไม่ต้อง `pip install` packages เพิ่มเติม)
+> 📌 DB target อ่านจาก env var `DATABASE_URL` (default: `postgresql://localhost/finrisk_dev`) — ดู `src/config.py`
 
 ---
 
@@ -81,25 +80,31 @@ python seed_database.py --db my_custom_risk.db
 
 ## 2. Quick start
 
-ต้องมี **Python 3.10+**
+ต้องมี **Python 3.10+** และ **PostgreSQL** รันอยู่ (local: `brew install postgresql@18` หรือเทียบเท่า)
 
 ```bash
-# 1) (แนะนำ) สร้าง virtual env
+# 1) สร้าง database เปล่าไว้ก่อน (ครั้งแรกเท่านั้น)
+createdb finrisk_dev
+
+# 2) (แนะนำ) สร้าง virtual env
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 
-# 2) ติดตั้ง dependency ของ API
+# 3) ติดตั้ง dependency (รวม psycopg driver)
 pip install -r requirements.txt
 
-# 3) สร้างฐานข้อมูล + seed ข้อมูล + รัน risk engine ครั้งแรก
-python seed_database.py --force    # ได้ไฟล์ fraud_risk.db
+# 4) สร้าง schema + seed ข้อมูล + รัน risk engine ครั้งแรก
+python seed_database.py
 
-# 4) รัน API
+# 5) รัน API
 uvicorn src.main:app --reload
 ```
 
 เปิดเอกสาร API อัตโนมัติที่ **http://127.0.0.1:8000/docs**
 ตรวจสุขภาพระบบที่ **http://127.0.0.1:8000/health**
+
+> DB connection อ่านจาก env var `DATABASE_URL` (default: `postgresql://localhost/finrisk_dev`)
+> ตั้งค่าต่างออกไปได้ถ้า database ชื่ออื่น/อยู่เครื่องอื่น — ดู `src/config.py`
 
 ---
 
@@ -110,8 +115,8 @@ data_modelling/
 ├─ src/                         # โค้ด backend (FastAPI)
 │  ├─ main.py                   # entry point — รวม router + CORS + /health
 │  ├─ config.py                 # path DB, CORS origin, ค่าคงที่
-│  ├─ database.py               # ตัวช่วยต่อ SQLite (dependency get_db)
-│  ├─ auth.py                   # mock login + role/scope guard
+│  ├─ database.py               # ตัวช่วยต่อ PostgreSQL (dependency get_db)
+│  ├─ auth.py                   # login (bcrypt + JWT) + role/scope guard
 │  ├─ schemas.py                # Pydantic models
 │  ├─ services/                 # service function (contract ที่ router + chatbot ใช้ร่วมกัน)
 │  │  ├─ common.py              # scope guard + latest_run_id + domain error
@@ -123,6 +128,7 @@ data_modelling/
 │     ├─ projects.py            # /projects (+ risk score ล่าสุด)
 │     ├─ risk.py                # /risk/factors, /risk/annual, /risk/summary
 │     ├─ audit.py               # /audit/assignments, /audit/feedback
+│     ├─ admin.py               # /admin/data/upload, /admin/risk-engine/run (admin เท่านั้น)
 │     ├─ legal.py               # /legal/laws, /risk/projects/{id}/legal
 │     └─ documents.py           # /documents/types, /projects/{id}/documents
 ├─ tests/
@@ -130,8 +136,7 @@ data_modelling/
 │  └─ test_legal_documents.py   # เทสต์ชั้นกฎหมาย + ชั้นเอกสาร
 ├─ legal_refs/                  # CSV กฎหมายที่ curate แล้ว (laws, law_sections, factor_legal_map)
 ├─ mock_documents/              # CSV ชั้นเอกสาร mock (doc types, documents, findings, finding map)
-├─ seed_database.py             # สร้าง DB + seed + รัน risk engine + validate
-├─ fraud_risk.db                # SQLite (สร้างจาก seed — ไม่ commit ตาม .gitignore)
+├─ seed_database.py             # สร้าง schema บน PostgreSQL + seed + รัน risk engine + validate
 ├─ standardized_data/           # CSV กลางที่ seed อ่านเข้า
 │  ├─ projects_ALL_master.csv          (98 แถว → 97 โครงการหลัง dedup)
 │  └─ financial_report_ALL_master.csv  (337 แถว)
@@ -145,7 +150,7 @@ data_modelling/
 
 ## 4. Data model โดยย่อ
 
-ฐานข้อมูล SQLite เดียว (`fraud_risk.db`) 15 ตาราง แบ่งเป็น 4 กลุ่ม:
+ฐานข้อมูล PostgreSQL เดียว (ตาม `DATABASE_URL`) 15+ ตาราง แบ่งเป็น 4 กลุ่ม:
 
 **Master data** — `subdistricts` (3 ตำบล), `vendors` (57 ราย), `projects` (97 โครงการ),
 `financial_statements` (337 บรรทัดงบการเงิน), `roles` (6 บทบาท ตาม `roles.md`), `users` (8 mock users)
@@ -207,38 +212,50 @@ mock users ทั้งหมดรหัสผ่านเดียวกัน
 ## 6. ทดลองยิง API
 
 ```bash
-# login (mock) — ได้ token = username กลับมา
-curl -X POST http://127.0.0.1:8000/auth/login \
+# login — รหัสผ่าน bcrypt hash แล้ว, ได้ JWT access token กลับมา (อายุ 8 ชม.)
+TOKEN=$(curl -s -X POST http://127.0.0.1:8000/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"password123"}'
+  -d '{"username":"admin","password":"password123"}' | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
 
-# ทุก endpoint ที่ต้อง auth ให้แนบ header X-Username (mock)
-curl http://127.0.0.1:8000/projects?risk_level=high -H "X-Username: admin"
-curl http://127.0.0.1:8000/risk/summary            -H "X-Username: thachang_user"
-curl http://127.0.0.1:8000/subdistricts            -H "X-Username: public1"   # ประชาชน: เห็นทุกตำบล
+# ทุก endpoint ที่ต้อง auth ให้แนบ header Authorization: Bearer <token>
+curl http://127.0.0.1:8000/projects?risk_level=high -H "Authorization: Bearer $TOKEN"
+curl http://127.0.0.1:8000/risk/summary            -H "X-Username: thachang_user"  # legacy fallback ก็ยังใช้ได้ระหว่างเปลี่ยนผ่าน
+curl http://127.0.0.1:8000/subdistricts            -H "X-Username: public1"        # ประชาชน: เห็นทุกตำบล
 
 # ชั้นกฎหมาย + ชั้นเอกสาร (legal linkage) — โครงการเดโม MOCK-CON-001/002 อยู่ตำบลโยนก
-curl http://127.0.0.1:8000/legal/laws                              -H "X-Username: admin"
-curl http://127.0.0.1:8000/risk/projects/MOCK-CON-002/legal        -H "X-Username: admin"
-curl "http://127.0.0.1:8000/risk/projects/MOCK-CON-002/legal?only_triggered=true" -H "X-Username: admin"
-curl http://127.0.0.1:8000/projects/MOCK-CON-001/documents         -H "X-Username: admin"
+curl http://127.0.0.1:8000/legal/laws                              -H "Authorization: Bearer $TOKEN"
+curl http://127.0.0.1:8000/risk/projects/MOCK-CON-002/legal        -H "Authorization: Bearer $TOKEN"
+curl "http://127.0.0.1:8000/risk/projects/MOCK-CON-002/legal?only_triggered=true" -H "Authorization: Bearer $TOKEN"
+curl http://127.0.0.1:8000/projects/MOCK-CON-001/documents         -H "Authorization: Bearer $TOKEN"
 ```
 
 `/risk/projects/{id}/legal` คืน risk factor ล่าสุดของโครงการพร้อม `computable`,
 `action_suggestion` และ `legal_refs` — ถ้า factor นั้น `triggered=1` แต่ยังไม่ได้ curate มาตรา
 จะได้ `legal_refs: []` + `legal_ref_note` เป็นข้อความตายตัวจาก backend (ห้าม LLM แต่งมาตราเอง)
 
-> ⚠️ **Auth เป็น mock** (token = username, sha256 ไม่มี salt) เหมาะกับ demo เท่านั้น
-> ก่อนขึ้น production ต้องเปลี่ยนเป็น bcrypt/argon2 + JWT — ดู `CLAUDE.md`
+> ⚠️ ตั้ง env var **`JWT_SECRET`** เป็นค่าสุ่มยาวๆ ก่อนขึ้น production (ไม่งั้นจะมี warning log
+> ตอน startup) — ดู `CLAUDE.md` หัวข้อ Auth
+
+```bash
+# admin: สั่งคำนวณ risk score ใหม่จากข้อมูลปัจจุบัน (ไม่อ่าน CSV ใหม่)
+curl -X POST http://127.0.0.1:8000/admin/risk-engine/run -H "Authorization: Bearer $TOKEN"
+
+# admin: นำเข้าโครงการ/งบการเงินรอบใหม่ของตำบลที่มีอยู่แล้ว (ฟอร์แมตตาม _schema_dictionary.md)
+curl -X POST http://127.0.0.1:8000/admin/data/upload \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "subdistrict_id=1" \
+  -F "projects_csv=@new_projects.csv;type=text/csv"
+# → รัน /admin/risk-engine/run ต่อเพื่อให้ dashboard เห็นผลข้อมูลใหม่
+```
 
 ---
 
 ## 7. เทสต์
 
 ```bash
-pytest -q                       # ทั้ง tests/ และ ocr_pipeline/tests/ (ต้องมี fraud_risk.db แล้ว)
-pytest tests/ -q                # เฉพาะ API (smoke + ชั้นกฎหมาย/เอกสาร)
-pytest ocr_pipeline/tests -q    # เฉพาะ OCR pipeline
+python -m pytest -q                       # ทั้ง tests/ และ ocr_pipeline/tests/ (ต้องมี postgres รันอยู่ + seed แล้ว)
+python -m pytest tests/ -q                # เฉพาะ API (smoke + auth + admin + ชั้นกฎหมาย/เอกสาร)
+python -m pytest ocr_pipeline/tests -q    # เฉพาะ OCR pipeline
 ```
 
 `pytest.ini` กำหนด `testpaths` ไว้แล้ว และกัน `ocr_pipeline/work/` (ผลลัพธ์ต่อ run, gitignored)
@@ -284,10 +301,10 @@ cp -r ocr_pipeline/work/t67/ocr pipeline/ocr_output/thachang67
 
 ## 9. งานที่ยังต้องทำต่อ (สำหรับ dev ใหม่)
 
-- เปลี่ยน mock auth เป็น JWT + password hashing จริง
+- deploy จริง: ต้อง provision PostgreSQL แบบ persistent (เช่น Neon/Supabase/RDS) แล้วตั้ง
+  `DATABASE_URL` บน Vercel — ยังไม่ได้ provision
 - `/audit/feedback`: filter สถานะ `draft` ให้เห็นเฉพาะเจ้าของ และเพิ่ม scope guard ให้
   `GET /audit/feedback/{project_id}` (ตอนนี้ยังไม่กรองตำบล)
-- เพิ่ม endpoint สำหรับ "รัน risk engine ใหม่" (ตอนนี้รันผ่าน `seed_database.py` เท่านั้น)
 - ต่อ OCR จริงเข้าชั้นเอกสาร (ตอนนี้ `project_documents`/`document_findings` เป็น `source='mock'`
   ทั้งหมด) — ก่อนให้ finding จาก OCR/LLM ขยับ risk score ต้องเพิ่ม review gate ให้คนยืนยันก่อน
 - curate mapping กฎหมายของ A2/A3 (ตอนนี้ยังไม่มี → chatbot ตอบ "ยังไม่มีการเชื่อมโยงข้อกฎหมาย")

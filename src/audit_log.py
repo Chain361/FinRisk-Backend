@@ -12,7 +12,6 @@ audit_log.py — บันทึกการเข้าถึงของผู
 - เก็บ username/role แบบ denormalize เพื่อคง snapshot ณ เวลาเกิด action
 """
 import logging
-import sqlite3
 
 log = logging.getLogger("finrisk.audit")
 
@@ -79,12 +78,12 @@ def record_access(
 ) -> None:
     """
     เขียน 1 แถวลง access_log แบบ best-effort.
-    `connect` = callable ที่คืน sqlite3.Connection (ส่ง database._connect เข้ามา
+    `connect` = callable ที่คืน database connection (ส่ง database._connect เข้ามา
     เพื่อไม่ผูก dependency วนกับ database module)
     """
     action, resource_type, resource_id = derive_action_resource(method, path)
     try:
-        conn: sqlite3.Connection = connect()
+        conn = connect()
         try:
             role_row = conn.execute(
                 "SELECT role FROM users WHERE username = ?", (username,)

@@ -1,16 +1,14 @@
 # -*- coding: utf-8 -*-
 """/projects — โครงการจัดซื้อจัดจ้าง + risk score ล่าสุด"""
-import sqlite3
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..auth import get_current_user, scope_subdistrict_ids
-from ..database import get_db, rows_to_dicts
+from ..database import Connection, get_db, rows_to_dicts
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
-def _latest_run_id(conn: sqlite3.Connection) -> int | None:
+def _latest_run_id(conn: Connection) -> int | None:
     row = conn.execute(
         "SELECT run_id FROM assessment_runs ORDER BY run_id DESC LIMIT 1"
     ).fetchone()
@@ -23,7 +21,7 @@ def list_projects(
     subdistrict_id: int | None = Query(default=None),
     risk_level: str | None = Query(default=None, pattern="^(low|medium|high)$"),
     user: dict = Depends(get_current_user),
-    conn: sqlite3.Connection = Depends(get_db),
+    conn: Connection = Depends(get_db),
 ):
     run_id = _latest_run_id(conn)
     where, params = [], []
@@ -66,7 +64,7 @@ def list_projects(
 def get_project(
     project_id: str,
     user: dict = Depends(get_current_user),
-    conn: sqlite3.Connection = Depends(get_db),
+    conn: Connection = Depends(get_db),
 ):
     p = conn.execute("SELECT * FROM projects WHERE project_id = ?", (project_id,)).fetchone()
     if p is None:
