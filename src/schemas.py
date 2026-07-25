@@ -24,8 +24,7 @@ class UserOut(BaseModel):
 
 
 class LoginResponse(BaseModel):
-    # mock token = username; production ให้เปลี่ยนเป็น JWT
-    token: str
+    token: str  # JWT access token — แนบเป็น "Authorization: Bearer <token>"
     user: UserOut
 
 

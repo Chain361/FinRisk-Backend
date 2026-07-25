@@ -18,14 +18,13 @@ Input:
 
 import argparse
 import csv
-import hashlib
 import io
 import json
 import os
 import sys
 from datetime import datetime, timedelta
 
-from src.config import DATABASE_URL
+from src.auth import hash_password
 from src.database import _connect
 
 # บังคับ stdout เป็น UTF-8 เพื่อให้ print อักขระพิเศษ (§, →, —) บน Windows cp874 ได้
@@ -548,10 +547,6 @@ def to_int(v):
     return int(f) if f is not None else None
 
 
-def sha256(s):
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()
-
-
 def log(msg):
     print(f"  {msg}")
 
@@ -688,7 +683,7 @@ def seed_users_config(cur, sub_id):
     for username, display, role, sub in MOCK_USERS:
         cur.execute("""INSERT INTO users (username, password_hash, display_name, role, subdistrict_id)
             VALUES (?,?,?,?,?)""",
-                    (username, sha256("password123"), display, role,
+                    (username, hash_password("password123"), display, role,
                      sub_id.get(sub) if sub else None))
     for key, value, desc in APP_CONFIG:
         cur.execute("INSERT INTO app_config (key, value, description) VALUES (?,?,?)",

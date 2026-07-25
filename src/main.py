@@ -6,22 +6,44 @@ main.py — FastAPI application entry point
     uvicorn src.main:app --reload
 เปิด docs อัตโนมัติที่ http://127.0.0.1:8000/docs
 """
+import logging
+
+import jwt
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from .audit_log import record_access, should_log
-from .config import API_TITLE, API_VERSION, CORS_ORIGINS
+from .config import API_TITLE, API_VERSION, CORS_ORIGINS, JWT_ALGORITHM, JWT_SECRET, JWT_SECRET_DEFAULT
 from .database import _connect
 from .routers import audit, auth, financials, projects, risk, subdistricts
 
+log = logging.getLogger("finrisk.main")
+if JWT_SECRET == JWT_SECRET_DEFAULT:
+    log.warning(
+        "JWT_SECRET ยังเป็นค่า default ที่ไม่ปลอดภัย — ตั้ง env var JWT_SECRET เป็นค่าสุ่มยาวๆ ก่อนขึ้น production"
+    )
+
 app = FastAPI(title=API_TITLE, version=API_VERSION)
+
+
+def _username_for_log(request: Request) -> str | None:
+    """ดึง username สำหรับ access log — รองรับทั้ง JWT (Authorization: Bearer) และ
+    X-Username แบบเดิม (ช่วงเปลี่ยนผ่าน ดู src/auth.py)"""
+    authorization = request.headers.get("authorization")
+    if authorization and authorization.lower().startswith("bearer "):
+        try:
+            payload = jwt.decode(authorization[7:].strip(), JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            return payload.get("sub")
+        except jwt.InvalidTokenError:
+            return None
+    return request.headers.get("x-username")
 
 
 @app.middleware("http")
 async def access_log_middleware(request: Request, call_next):
     """บันทึกการเข้าถึงของผู้ใช้ที่ login แล้ว (accountability trail) — best-effort ไม่ทำให้ request พัง"""
     response = await call_next(request)
-    username = request.headers.get("x-username")
+    username = _username_for_log(request)
     if username and should_log(request.method, request.url.path):
         forwarded = request.headers.get("x-forwarded-for")
         ip = forwarded.split(",")[0].strip() if forwarded else (

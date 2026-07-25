@@ -3,6 +3,8 @@ fastapi==0.115.*
 uvicorn[standard]==0.32.*
 pydantic==2.*
 psycopg[binary]==3.*   # PostgreSQL driver — ใช้ทั้ง API และ seed_database.py
+bcrypt==4.*             # password hashing (มี salt ในตัว)
+PyJWT==2.*              # ออก/ตรวจ JWT access token
 
 # Dev / test
 httpx==0.27.*        # ใช้โดย fastapi.testclient

@@ -138,19 +138,19 @@ mock users ทั้งหมดรหัสผ่านเดียวกัน
 ## 6. ทดลองยิง API
 
 ```bash
-# login (mock) — ได้ token = username กลับมา
-curl -X POST http://127.0.0.1:8000/auth/login \
+# login — รหัสผ่าน bcrypt hash แล้ว, ได้ JWT access token กลับมา (อายุ 8 ชม.)
+TOKEN=$(curl -s -X POST http://127.0.0.1:8000/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"password123"}'
+  -d '{"username":"admin","password":"password123"}' | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
 
-# ทุก endpoint ที่ต้อง auth ให้แนบ header X-Username (mock)
-curl http://127.0.0.1:8000/projects?risk_level=high -H "X-Username: admin"
-curl http://127.0.0.1:8000/risk/summary            -H "X-Username: thachang_user"
-curl http://127.0.0.1:8000/subdistricts            -H "X-Username: public1"   # ประชาชน: เห็นทุกตำบล
+# ทุก endpoint ที่ต้อง auth ให้แนบ header Authorization: Bearer <token>
+curl http://127.0.0.1:8000/projects?risk_level=high -H "Authorization: Bearer $TOKEN"
+curl http://127.0.0.1:8000/risk/summary            -H "X-Username: thachang_user"  # legacy fallback ก็ยังใช้ได้ระหว่างเปลี่ยนผ่าน
+curl http://127.0.0.1:8000/subdistricts            -H "X-Username: public1"        # ประชาชน: เห็นทุกตำบล
 ```
 
-> ⚠️ **Auth เป็น mock** (token = username, sha256 ไม่มี salt) เหมาะกับ demo เท่านั้น
-> ก่อนขึ้น production ต้องเปลี่ยนเป็น bcrypt/argon2 + JWT — ดู `CLAUDE.md`
+> ⚠️ ตั้ง env var **`JWT_SECRET`** เป็นค่าสุ่มยาวๆ ก่อนขึ้น production (ไม่งั้นจะมี warning log
+> ตอน startup) — ดู `CLAUDE.md` หัวข้อ Auth
 
 ---
 
@@ -176,7 +176,6 @@ pytest -q                # รัน smoke test (ต้องมี postgres ร
 
 ## 9. งานที่ยังต้องทำต่อ (สำหรับ dev ใหม่)
 
-- เปลี่ยน mock auth เป็น JWT + password hashing จริง
 - เพิ่ม endpoint สำหรับ "รัน risk engine ใหม่" (ตอนนี้รันผ่าน `seed_database.py` เท่านั้น)
 - ส่วน "Document Intelligence" (อ่านเอกสาร/OCR) ตามชื่อ Mission ยังไม่ได้เริ่ม
 - deploy จริง: ต้อง provision PostgreSQL แบบ persistent (เช่น Neon/Supabase/RDS) แล้วตั้ง

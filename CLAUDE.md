@@ -30,7 +30,7 @@ pytest -q                              # smoke test
   `Connection`/`Cursor` แปลง `?` placeholder (สไตล์เดิมของทั้ง repo) เป็น `%s` ให้อัตโนมัติ;
   `SqliteLikeRow` เลียนแบบ `sqlite3.Row` (index ตัวเลข + key ชื่อคอลัมน์ + iterate เป็นค่า)
   เพื่อให้ query เดิมทั่ว repo ใช้ต่อได้โดยไม่ต้องแก้ทีละจุด; helper `rows_to_dicts()`
-- `src/auth.py` — mock login + `get_current_user`, `require_roles(...)`, `scope_subdistrict_ids(...)`
+- `src/auth.py` — JWT login (bcrypt + PyJWT) + `get_current_user`, `require_roles(...)`, `scope_subdistrict_ids(...)`
 - `src/schemas.py` — Pydantic model (request/response)
 - `src/routers/*.py` — endpoint แยกตามโดเมน (auth, subdistricts, projects, risk, audit)
 
@@ -59,16 +59,17 @@ pytest -q                              # smoke test
 - อย่าแก้ตรรกะ risk ในโค้ด API — logic ทั้งหมดอยู่ใน `seed_database.py`
   (`run_project_engine`, `run_annual_engine`) แก้ที่นั่นแล้วรัน seed ใหม่
 
-## Auth (mock) — ⚠️ ต้องแทนที่ก่อน production
+## Auth (JWT)
 
-ตอนนี้เป็น mock ล้วน:
-- รหัสผ่านทุก user = `password123`, เก็บเป็น `sha256` **ไม่มี salt**
-- "token" ที่ `/auth/login` คืน = username; endpoint ที่ต้อง auth อ่าน username จาก
-  header `X-Username` (ไม่ใช่ JWT)
-
-เมื่อทำ auth จริง: เปลี่ยน hashing เป็น **bcrypt/argon2**, ออก **JWT/session**,
-และแก้ `get_current_user` ให้ถอด token จาก `Authorization: Bearer ...`
-โครง `require_roles(...)` และ scope guard นำมาใช้ต่อได้เลย
+- รหัสผ่านเก็บเป็น **bcrypt hash** (มี salt ในตัว) — mock user ทุกคนยังใช้ `password123` เหมือนเดิม
+- `/auth/login` ออก **JWT access token** (HS256, อายุ `JWT_EXPIRE_MINUTES` ค่า default 480 นาที)
+  endpoint ที่ต้อง auth อ่าน token จาก header `Authorization: Bearer <token>`
+- ⚠️ **`JWT_SECRET`**: ต้องตั้ง env var เป็นค่าสุ่มยาวๆ ก่อนขึ้น production — ถ้ายังใช้ default
+  จะมี warning log ตอน startup (`src/main.py`)
+- ⚠️ **ช่วงเปลี่ยนผ่าน**: `get_current_user` ยังรับ header `X-Username` แบบเดิม (ไม่ verify ลายเซ็น)
+  เป็น fallback เพราะ frontend ที่ deploy อยู่ยังส่ง header นี้อยู่ — ลบ fallback นี้ทิ้งได้เมื่อ
+  frontend เปลี่ยนไปส่ง `Authorization: Bearer` ครบแล้ว (ดู FinRisk-Frontend issue #28)
+  ทุกครั้งที่ path นี้ถูกใช้จะมี warning log ให้เห็น
 
 ## ข้อควรระวังเรื่องข้อมูล (มีผลต่อ logic)
 

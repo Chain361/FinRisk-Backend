@@ -27,7 +27,13 @@ DEFAULT_CORS_ORIGINS = ",".join(
 )
 CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", DEFAULT_CORS_ORIGINS).split(",") if origin.strip()]
 
-# ข้อมูล login เป็น mock เท่านั้น (รหัสผ่านทุก user = "password123", hash แบบ sha256)
-# ห้ามใช้รูปแบบนี้บน production — ดู CLAUDE.md หัวข้อ Auth
+# JWT — ⚠️ ต้องตั้ง JWT_SECRET เป็นค่าสุ่มยาวๆ ผ่าน env var จริงก่อนขึ้น production
+# ค่า default นี้ใช้ได้เฉพาะ local dev เท่านั้น (ดู main.py — มี warning log ถ้ายังใช้ default นี้)
+JWT_SECRET_DEFAULT = "dev-only-insecure-secret-change-before-production"
+JWT_SECRET = os.getenv("JWT_SECRET", JWT_SECRET_DEFAULT)
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "480"))  # 8 ชั่วโมง (1 กะทำงาน)
+
+# รหัสผ่านทุก mock user = "password123" เก็บเป็น bcrypt hash (มี salt ในตัว) — ดู CLAUDE.md หัวข้อ Auth
 API_TITLE = "Local Budget Fraud Risk Assistant API"
 API_VERSION = "0.1.0"
