@@ -344,10 +344,17 @@ CREATE TABLE audit_assignments (
     project_id    TEXT NOT NULL REFERENCES projects(project_id),
     assigned_to   INTEGER NOT NULL REFERENCES users(user_id),   -- risk_analyst (นักวิเคราะห์)
     assigned_by   INTEGER NOT NULL REFERENCES users(user_id),   -- project_auditor (ผู้ตรวจสอบโครงการ)
-    priority      TEXT CHECK (priority IN ('low','medium','high')),  -- จัดลำดับตาม risk level
-    status        TEXT NOT NULL DEFAULT 'assigned' CHECK (status IN ('assigned','in_progress','submitted','reviewed')),
+    priority      TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('low','normal','high')),  -- จัดลำดับตาม risk level
+    note          TEXT NOT NULL DEFAULT '',           -- คำแนะนำจากผู้มอบหมาย
     due_date      TEXT,
-    created_at    TEXT DEFAULT (datetime('now'))
+    budget_hours  REAL,                                -- ชั่วโมงงบประมาณที่ตั้งไว้
+    audit_steps   TEXT NOT NULL DEFAULT '',            -- ขั้นตอนการตรวจสอบที่ผู้มอบหมายระบุ
+    -- ตรงกับ AssignmentStatus ฝั่ง frontend (FinRisk-Frontend/src/app/core/models/domain.models.ts) เป๊ะๆ
+    status        TEXT NOT NULL DEFAULT 'waiting_acceptance' CHECK (status IN (
+                      'waiting_acceptance','accepted','in_progress','clarification_needed',
+                      'ready_for_review','under_review','revision_requested','completed')),
+    created_at    TEXT DEFAULT (datetime('now')),
+    updated_at    TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX idx_assign_auditor ON audit_assignments(assigned_to, status);
 ```

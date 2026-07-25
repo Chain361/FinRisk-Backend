@@ -55,3 +55,80 @@ class AuditorFeedbackOut(BaseModel):
     updated_at: str
     submitted_at: str | None = None
     resolved_at: str | None = None
+
+
+class AssignmentCreate(BaseModel):
+    project_id: str
+    assignee_id: int
+    priority: Literal["low", "normal", "high"] = "normal"
+    note: str
+    due_date: str | None = None
+    budget_hours: float | None = None
+    audit_steps: str = ""
+
+
+class AssignmentStatusUpdate(BaseModel):
+    status: Literal[
+        "waiting_acceptance",
+        "accepted",
+        "in_progress",
+        "clarification_needed",
+        "ready_for_review",
+        "under_review",
+        "revision_requested",
+        "completed",
+    ]
+
+
+class AssignmentOut(BaseModel):
+    assignment_id: int
+    project_id: str
+    assigned_to: int
+    assigned_by: int
+    priority: str
+    note: str
+    due_date: str | None = None
+    budget_hours: float | None = None
+    audit_steps: str
+    status: str
+    created_at: str
+    updated_at: str
+    project_name: str | None = None
+    subdistrict_id: int | None = None
+    assignee_username: str | None = None
+    assignee_display_name: str | None = None
+    assigned_by_username: str | None = None
+    assigned_by_display_name: str | None = None
+
+
+class AssignmentAssigneeOut(BaseModel):
+    user_id: int
+    username: str
+    display_name: str | None = None
+    subdistrict_id: int
+    active_cases: int
+
+
+class AuditReportCreate(BaseModel):
+    work_process: str | None = None
+    objective: str | None = None
+    likelihood: int = Field(ge=1, le=5)
+    impact: int = Field(ge=1, le=5)
+    # schema เดิมของ audit_reports แยก impact_score/risk_level ออกจาก impact โดยไม่มีเอกสารสูตรคำนวณ
+    # รับตรงจาก client ไว้ก่อน (1-5 ตาม CHECK constraint) ไม่เดาสูตร derive เอง
+    impact_score: int | None = Field(default=None, ge=1, le=5)
+    risk_level: int | None = Field(default=None, ge=1, le=5)
+    findings: str | None = None
+
+
+class AuditReportOut(BaseModel):
+    report_id: int
+    assignment_id: int
+    work_process: str | None = None
+    objective: str | None = None
+    likelihood: int | None = None
+    impact: int | None = None
+    impact_score: int | None = None
+    risk_level: int | None = None
+    findings: str | None = None
+    submitted_at: str

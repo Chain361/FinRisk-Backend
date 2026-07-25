@@ -211,10 +211,17 @@ CREATE TABLE audit_assignments (
     project_id    TEXT NOT NULL REFERENCES projects(project_id),
     assigned_to   INTEGER NOT NULL REFERENCES users(user_id),
     assigned_by   INTEGER NOT NULL REFERENCES users(user_id),
-    priority      TEXT CHECK (priority IN ('low','medium','high')),
-    status        TEXT NOT NULL DEFAULT 'assigned' CHECK (status IN ('assigned','in_progress','submitted','reviewed')),
+    priority      TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('low','normal','high')),
+    note          TEXT NOT NULL DEFAULT '',
     due_date      TEXT,
-    created_at    TEXT DEFAULT (datetime('now'))
+    budget_hours  REAL,
+    audit_steps   TEXT NOT NULL DEFAULT '',
+    -- ตรงกับ AssignmentStatus ใน frontend (domain.models.ts) เป๊ะๆ — ห้ามแก้ฝั่งเดียว
+    status        TEXT NOT NULL DEFAULT 'waiting_acceptance' CHECK (status IN (
+                      'waiting_acceptance','accepted','in_progress','clarification_needed',
+                      'ready_for_review','under_review','revision_requested','completed')),
+    created_at    TEXT DEFAULT (datetime('now')),
+    updated_at    TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX idx_assign_auditor ON audit_assignments(assigned_to, status);
 
@@ -1048,6 +1055,56 @@ def seed_auditor_feedback(cur):
         n += 1
     log(f"auditor feedback (demo): {n} รายการ กระจาย {len(auditors)} ตำบล ครบสถานะ draft/submitted/resolved")
 
+
+DEMO_ASSIGNMENTS = [
+    # (priority, note, audit_steps, budget_hours, status, days_ago)
+    ("high", "ตรวจสอบราคาสัญญาเทียบราคากลางและประวัติผู้รับจ้าง",
+     "1) ตรวจสอบเอกสารจัดซื้อจัดจ้าง 2) เปรียบเทียบราคากับโครงการใกล้เคียง 3) สรุปข้อสังเกต",
+     8, "waiting_acceptance", 0),
+    ("normal", "ตรวจสอบความครบถ้วนของเอกสารแนบโครงการ",
+     "1) ตรวจสอบเอกสารแนบ 2) ตรวจสอบบันทึกคณะกรรมการตรวจรับ",
+     6, "in_progress", 3),
+    ("high", "ตรวจสอบงบประมาณที่สูงกว่าค่าเฉลี่ยกลุ่มโครงการเดียวกัน",
+     "1) เทียบราคาต่อหน่วยกับตลาด 2) ขอแบบรูปรายการและประมาณการราคา",
+     10, "ready_for_review", 7),
+]
+
+
+def seed_audit_assignments(cur):
+    """seed มอบหมายงานตรวจสอบ (demo) — จับคู่ project_auditor -> risk_analyst ตามตำบล
+    ให้หน้า F4 (มอบหมายงาน) และ "งานของฉัน" มีข้อมูลตัวอย่างครบหลายสถานะ"""
+    auditors = {}  # subdistrict_id -> user_id (project_auditor)
+    analysts = {}  # subdistrict_id -> user_id (risk_analyst)
+    for uid, role, sid in cur.execute(
+            "SELECT user_id, role, subdistrict_id FROM users WHERE role IN ('project_auditor','risk_analyst')"):
+        (auditors if role == "project_auditor" else analysts)[sid] = uid
+
+    # โครงการ risk สูงสุดต่อตำบล (run ล่าสุด) — ไม่ hardcode project_id
+    top_project = {}  # subdistrict_id -> project_id
+    for pid, sid in cur.execute("""
+            SELECT prs.project_id, p.subdistrict_id
+            FROM project_risk_scores prs
+            JOIN projects p ON p.project_id = prs.project_id
+            WHERE prs.run_id = (SELECT MAX(run_id) FROM assessment_runs)
+            ORDER BY p.subdistrict_id, prs.risk_score DESC"""):
+        top_project.setdefault(sid, pid)
+
+    n = 0
+    for i, sid in enumerate(sorted(auditors)):
+        if sid not in analysts or sid not in top_project:
+            continue
+        priority, note, audit_steps, budget_hours, status_, days_ago = DEMO_ASSIGNMENTS[i % len(DEMO_ASSIGNMENTS)]
+        ts = (datetime.now() - timedelta(days=days_ago)).strftime("%Y-%m-%d %H:%M:%S")
+        due_date = (datetime.now() + timedelta(days=14 - days_ago)).strftime("%Y-%m-%d")
+        cur.execute("""INSERT INTO audit_assignments
+            (project_id, assigned_to, assigned_by, priority, note, due_date, budget_hours,
+             audit_steps, status, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    (top_project[sid], analysts[sid], auditors[sid], priority, note, due_date,
+                     budget_hours, audit_steps, status_, ts, ts))
+        n += 1
+    log(f"audit assignments (demo): {n} รายการ กระจาย {len(auditors)} ตำบล ครบสถานะ waiting_acceptance/in_progress/ready_for_review")
+
 # ---------------------------------------------------------------------------
 # 7. Validation (§9.5 + §11.5)
 # ---------------------------------------------------------------------------
@@ -1224,6 +1281,7 @@ def main():
     run_project_engine(cur, run_id)
     run_annual_engine(cur, run_id)
     seed_auditor_feedback(cur)  # หลัง engine — เลือกโครงการจาก risk score จริง
+    seed_audit_assignments(cur)  # หลัง engine เช่นกัน — เลือกโครงการจาก risk score จริง
     con.commit()
 
     print("[5/5] Validation (§9.5)")

@@ -69,14 +69,110 @@ def test_all_scope_roles_see_all_subdistricts():
 
 
 def test_audit_assignments_role_gate():
-    # risk_analyst เข้าได้ (เห็นเฉพาะงานที่ได้รับมอบหมาย — ตารางยังว่างใน seed)
+    # risk_analyst เข้าได้ (เห็นเฉพาะงานที่ได้รับมอบหมาย — seed มีให้ 1 รายการต่อคน)
     r = client.get("/audit/assignments", headers={"X-Username": "analyst1"})
     assert r.status_code == 200
-    assert r.json() == []
+    rows = r.json()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "waiting_acceptance"
+    assert rows[0]["assignee_username"] == "analyst1"
     # local_executive / public_user ไม่มีสิทธิ์งาน assignment ตาม roles.md
     for username in ("thachang_user", "public1"):
         r = client.get("/audit/assignments", headers={"X-Username": username})
         assert r.status_code == 403, username
+
+
+def test_audit_assignment_assignees_scope():
+    # project_auditor เห็นเฉพาะ risk_analyst ตำบลตัวเอง
+    rows = client.get("/audit/assignments/assignees", headers={"X-Username": "auditor1"}).json()
+    assert rows and all(r["subdistrict_id"] == 1 for r in rows)
+    usernames = {r["username"] for r in rows}
+    assert "analyst1" in usernames
+    assert "analyst2" not in usernames
+
+    # admin เห็นทุกตำบล — อย่างน้อยเท่ากับที่ auditor1 เห็น
+    admin_rows = client.get("/audit/assignments/assignees", headers={"X-Username": "admin"}).json()
+    assert len(admin_rows) >= len(rows)
+
+    # risk_analyst / public_user ไม่มีสิทธิ์ดู assignees (ไม่ใช่ฝั่งมอบหมายงาน)
+    for username in ("analyst1", "public1"):
+        r = client.get("/audit/assignments/assignees", headers={"X-Username": username})
+        assert r.status_code == 403, username
+
+
+def test_audit_assignment_lifecycle():
+    """create -> status update (โดย analyst เจ้าของงาน) -> submit report -> delete
+    ระวัง: ใช้ fraud_risk.db จริง ต้องลบ assignment ที่สร้างก่อนจบ"""
+    auditor = {"X-Username": "auditor1"}
+    analyst = {"X-Username": "analyst1"}
+    project_id = client.get("/projects", headers=auditor).json()[0]["project_id"]
+    assignee_id = next(
+        r["user_id"]
+        for r in client.get("/audit/assignments/assignees", headers=auditor).json()
+        if r["username"] == "analyst1"
+    )
+    assignment_id = None
+    try:
+        r = client.post("/audit/assignments", headers=auditor, json={
+            "project_id": project_id,
+            "assignee_id": assignee_id,
+            "note": "ทดสอบ lifecycle (สร้างโดย smoke test)",
+            "audit_steps": "1) ตรวจเอกสาร",
+        })
+        assert r.status_code == 201
+        assignment = r.json()
+        assignment_id = assignment["assignment_id"]
+        assert assignment["status"] == "waiting_acceptance"
+        assert assignment["assignee_username"] == "analyst1"
+        assert assignment["assigned_by_username"] == "auditor1"
+
+        # auditor คนละตำบล แก้สถานะงานนี้ไม่ได้ (ไม่ใช่เจ้าของ/ผู้มอบหมาย/admin)
+        r = client.patch(f"/audit/assignments/{assignment_id}/status",
+                          headers={"X-Username": "auditor2"}, json={"status": "in_progress"})
+        assert r.status_code == 403
+
+        # analyst1 (เจ้าของงาน) เปลี่ยนสถานะได้
+        r = client.patch(f"/audit/assignments/{assignment_id}/status", headers=analyst,
+                          json={"status": "in_progress"})
+        assert r.status_code == 200
+        assert r.json()["status"] == "in_progress"
+
+        # analyst1 ส่งผลตรวจสอบ — assignment ต้องเลื่อนเป็น ready_for_review ให้อัตโนมัติ
+        r = client.post(f"/audit/assignments/{assignment_id}/report", headers=analyst, json={
+            "work_process": "ทดสอบกระบวนงาน",
+            "objective": "ทดสอบวัตถุประสงค์",
+            "likelihood": 3,
+            "impact": 4,
+            "findings": "ไม่พบข้อสังเกตที่มีนัยสำคัญ",
+        })
+        assert r.status_code == 201
+        assert r.json()["likelihood"] == 3
+
+        rows = client.get("/audit/assignments", headers=analyst).json()
+        updated = next(a for a in rows if a["assignment_id"] == assignment_id)
+        assert updated["status"] == "ready_for_review"
+
+        # analyst ลบงานไม่ได้ (ไม่ใช่ผู้มอบหมาย/admin)
+        r = client.delete(f"/audit/assignments/{assignment_id}", headers=analyst)
+        assert r.status_code == 403
+
+        # เจ้าของงาน (auditor1) ลบไม่ได้เช่นกัน เพราะมีรายงานผลตรวจสอบผูกอยู่แล้ว (409)
+        r = client.delete(f"/audit/assignments/{assignment_id}", headers=auditor)
+        assert r.status_code == 409
+    finally:
+        # เก็บกวาด — ต้องลบผ่าน connection ตรง เพราะ endpoint กันลบ assignment ที่มี report ผูกอยู่ (409 ด้านบน)
+        if assignment_id is not None:
+            import sqlite3
+
+            from src.config import DB_PATH
+
+            con = sqlite3.connect(str(DB_PATH))
+            try:
+                con.execute("DELETE FROM audit_reports WHERE assignment_id = ?", (assignment_id,))
+                con.execute("DELETE FROM audit_assignments WHERE assignment_id = ?", (assignment_id,))
+                con.commit()
+            finally:
+                con.close()
 
 
 def test_public_user_cannot_view_audit_feedback():

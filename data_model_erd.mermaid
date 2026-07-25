@@ -113,8 +113,12 @@ erDiagram
         text project_id FK
         int assigned_to FK "risk_analyst"
         int assigned_by FK "project_auditor"
-        text priority
-        text status
+        text priority "low/normal/high"
+        text note
+        text due_date
+        real budget_hours
+        text audit_steps
+        text status "waiting_acceptance..completed"
     }
     audit_reports {
         int report_id PK
