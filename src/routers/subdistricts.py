@@ -1,11 +1,9 @@
 # -*- coding: utf-8 -*-
 """/subdistricts — ข้อมูลตำบล (master + note ความครบถ้วนข้อมูล)"""
-import sqlite3
-
 from fastapi import APIRouter, Depends
 
 from ..auth import get_current_user, scope_subdistrict_ids
-from ..database import get_db, rows_to_dicts
+from ..database import Connection, get_db, rows_to_dicts
 
 router = APIRouter(prefix="/subdistricts", tags=["subdistricts"])
 
@@ -13,7 +11,7 @@ router = APIRouter(prefix="/subdistricts", tags=["subdistricts"])
 @router.get("")
 def list_subdistricts(
     user: dict = Depends(get_current_user),
-    conn: sqlite3.Connection = Depends(get_db),
+    conn: Connection = Depends(get_db),
 ):
     ids = scope_subdistrict_ids(conn, user)
     if ids is None:

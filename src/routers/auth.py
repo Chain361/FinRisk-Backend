@@ -1,18 +1,16 @@
 # -*- coding: utf-8 -*-
 """/auth — mock login"""
-import sqlite3
-
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from ..auth import get_current_user, verify_login
-from ..database import get_db
+from ..database import Connection, get_db
 from ..schemas import LoginRequest, LoginResponse, UserOut
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/login", response_model=LoginResponse)
-def login(body: LoginRequest, conn: sqlite3.Connection = Depends(get_db)):
+def login(body: LoginRequest, conn: Connection = Depends(get_db)):
     user = verify_login(conn, body.username, body.password)
     if user is None:
         raise HTTPException(

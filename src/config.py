@@ -10,8 +10,9 @@ from pathlib import Path
 # repo root = โฟลเดอร์แม่ของ src/
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# ตำแหน่งไฟล์ SQLite (สร้างจาก seed_database.py)
-DB_PATH = Path(os.getenv("FRAUD_RISK_DB", BASE_DIR / "fraud_risk.db"))
+# connection string ของ PostgreSQL (สร้าง schema + seed ด้วย seed_database.py)
+# local dev default: ต้องมี postgres รันอยู่ + สร้าง database `finrisk_dev` ไว้ก่อน (createdb finrisk_dev)
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://localhost/finrisk_dev")
 
 # CORS: origin ของ frontend (คั่นด้วย comma) — localhost และ 127.0.0.1 เป็นคนละ origin ใน browser
 DEFAULT_CORS_ORIGINS = ",".join(

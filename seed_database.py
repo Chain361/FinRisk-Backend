@@ -2,19 +2,18 @@
 """
 seed_database.py — Local Budget Fraud Risk Assistant
 =====================================================
-สร้าง SQLite database + seed ข้อมูล + รัน risk engine ครั้งแรก + validate
+สร้าง schema บน PostgreSQL (ตาม DATABASE_URL) + seed ข้อมูล + รัน risk engine ครั้งแรก + validate
 ตาม data_model_design.md (อัปเดต ก.ค. 2569)
 
-วิธีรัน (ต้องมีไฟล์ CSV อยู่โฟลเดอร์เดียวกับ script):
-    python seed_database.py                      # สร้าง fraud_risk.db
-    python seed_database.py --db mydb.db         # ระบุชื่อ db เอง
-    python seed_database.py --force              # ลบ db เดิมแล้วสร้างใหม่
+วิธีรัน (ต้องมีไฟล์ CSV อยู่โฟลเดอร์เดียวกับ script + ตั้ง DATABASE_URL ชี้ postgres ที่ว่างอยู่):
+    python seed_database.py                      # สร้าง schema + seed
+    python seed_database.py --force               # ลบตารางเดิมทั้งหมดแล้วสร้างใหม่
 
 Input:
     projects_ALL_master.csv           (97 แถว → 96 โครงการหลัง dedup)
     financial_report_ALL_master.csv   (337 แถว)
 
-ใช้ Python stdlib เท่านั้น (sqlite3, csv) — ไม่ต้องติดตั้ง package เพิ่ม
+ต้องติดตั้ง psycopg (ดู requirements.txt) — ต่างจากเดิมที่ใช้ sqlite3 stdlib ล้วน
 """
 
 import argparse
@@ -23,9 +22,11 @@ import hashlib
 import io
 import json
 import os
-import sqlite3
 import sys
 from datetime import datetime, timedelta
+
+from src.config import DATABASE_URL
+from src.database import _connect
 
 # บังคับ stdout เป็น UTF-8 เพื่อให้ print อักขระพิเศษ (§, →, —) บน Windows cp874 ได้
 sys.stdout.reconfigure(encoding="utf-8")
@@ -40,10 +41,12 @@ FINANCIAL_CSV = os.path.join(BASE_DIR, "standardized_data", "financial_report_AL
 # ---------------------------------------------------------------------------
 
 DDL = """
-PRAGMA foreign_keys = ON;
+CREATE OR REPLACE FUNCTION now_text() RETURNS TEXT AS $$
+    SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+$$ LANGUAGE SQL;
 
 CREATE TABLE subdistricts (
-    subdistrict_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    subdistrict_id   INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name_th          TEXT NOT NULL UNIQUE,
     municipality_name TEXT,
     district         TEXT,
@@ -52,7 +55,7 @@ CREATE TABLE subdistricts (
 );
 
 CREATE TABLE vendors (
-    vendor_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    vendor_id   INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name        TEXT NOT NULL,
     tin         TEXT,
     tin_masked  INTEGER DEFAULT 0,
@@ -67,13 +70,13 @@ CREATE TABLE roles (
 );
 
 CREATE TABLE users (
-    user_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id        INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     username       TEXT NOT NULL UNIQUE,
     password_hash  TEXT NOT NULL,
     display_name   TEXT,
     role           TEXT NOT NULL REFERENCES roles(role_code),
     subdistrict_id INTEGER REFERENCES subdistricts(subdistrict_id),
-    created_at     TEXT DEFAULT (datetime('now'))
+    created_at     TEXT DEFAULT (now_text())
 );
 
 CREATE TABLE projects (
@@ -106,7 +109,7 @@ CREATE INDEX idx_projects_sub_year ON projects(subdistrict_id, budget_year);
 CREATE INDEX idx_projects_vendor   ON projects(vendor_id);
 
 CREATE TABLE financial_statements (
-    fs_id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    fs_id            INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     subdistrict_id   INTEGER NOT NULL REFERENCES subdistricts(subdistrict_id),
     fiscal_year      INTEGER NOT NULL,
     statement_type   TEXT NOT NULL,
@@ -135,19 +138,19 @@ CREATE TABLE risk_factors (
     legal_ref     TEXT,                              -- ฐานกฎหมาย/ระเบียบอ้างอิง (⚠️ ให้ฝ่ายกฎหมายยืนยันเลขมาตรา/ข้อ)
     data_requirement TEXT,
     enabled       INTEGER NOT NULL DEFAULT 1,
-    created_at    TEXT DEFAULT (datetime('now'))
+    created_at    TEXT DEFAULT (now_text())
 );
 
 CREATE TABLE assessment_runs (
-    run_id       INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    run_id       INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    run_at       TEXT NOT NULL DEFAULT (now_text()),
     triggered_by TEXT,
     factor_config_snapshot TEXT,
     note         TEXT
 );
 
 CREATE TABLE project_risk_results (
-    result_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    result_id     INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     run_id        INTEGER NOT NULL REFERENCES assessment_runs(run_id),
     project_id    TEXT NOT NULL REFERENCES projects(project_id),
     factor_code   TEXT NOT NULL REFERENCES risk_factors(factor_code),
@@ -165,7 +168,7 @@ CREATE TABLE project_risk_results (
 CREATE INDEX idx_prr_project ON project_risk_results(project_id, run_id);
 
 CREATE TABLE project_risk_scores (
-    score_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    score_id    INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     run_id      INTEGER NOT NULL REFERENCES assessment_runs(run_id),
     project_id  TEXT NOT NULL REFERENCES projects(project_id),
     risk_score  REAL NOT NULL,
@@ -182,7 +185,7 @@ CREATE TABLE project_risk_scores (
 );
 
 CREATE TABLE annual_risk_results (
-    result_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    result_id     INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     run_id        INTEGER NOT NULL REFERENCES assessment_runs(run_id),
     subdistrict_id INTEGER NOT NULL REFERENCES subdistricts(subdistrict_id),
     fiscal_year   INTEGER NOT NULL,
@@ -207,7 +210,7 @@ CREATE TABLE app_config (
 );
 
 CREATE TABLE assignments (
-    assignment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    assignment_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     project_id    TEXT NOT NULL REFERENCES projects(project_id),
     assigned_to   INTEGER NOT NULL REFERENCES users(user_id),
     assigned_by   INTEGER NOT NULL REFERENCES users(user_id),
@@ -220,26 +223,26 @@ CREATE TABLE assignments (
         'waiting_acceptance','accepted','in_progress','clarification_needed',
         'ready_for_review','under_review','revision_requested','completed'
     )),
-    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at    TEXT NOT NULL DEFAULT (now_text()),
+    updated_at    TEXT NOT NULL DEFAULT (now_text())
 );
 CREATE INDEX idx_assignments_assignee_status ON assignments(assigned_to, status);
 CREATE INDEX idx_assignments_project ON assignments(project_id);
 
 CREATE TABLE assignment_status_history (
-    history_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    history_id    INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     assignment_id INTEGER NOT NULL REFERENCES assignments(assignment_id),
     old_status    TEXT,
     new_status    TEXT NOT NULL,
     changed_by    INTEGER NOT NULL REFERENCES users(user_id),
     note          TEXT,
-    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at    TEXT NOT NULL DEFAULT (now_text())
 );
 CREATE INDEX idx_assignment_history_assignment
     ON assignment_status_history(assignment_id, history_id);
 
 CREATE TABLE audit_reports (
-    report_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id     INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     assignment_id INTEGER NOT NULL REFERENCES assignments(assignment_id),
     work_process  TEXT,
     objective     TEXT,
@@ -248,11 +251,11 @@ CREATE TABLE audit_reports (
     impact_score  INTEGER CHECK (impact_score BETWEEN 1 AND 5),
     risk_level    INTEGER CHECK (risk_level BETWEEN 1 AND 5),
     findings      TEXT,
-    submitted_at  TEXT DEFAULT (datetime('now'))
+    submitted_at  TEXT DEFAULT (now_text())
 );
 
 CREATE TABLE auditor_feedback (
-    feedback_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    feedback_id      INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     project_id       TEXT NOT NULL REFERENCES projects(project_id),
     user_id          INTEGER NOT NULL REFERENCES users(user_id),
     feedback_text    TEXT NOT NULL,
@@ -262,8 +265,8 @@ CREATE TABLE auditor_feedback (
     impact_score     INTEGER CHECK (impact_score BETWEEN 1 AND 5),
     suggestions      TEXT,
     status           TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','submitted','resolved')),
-    created_at       TEXT DEFAULT (datetime('now')),
-    updated_at       TEXT DEFAULT (datetime('now')),
+    created_at       TEXT DEFAULT (now_text()),
+    updated_at       TEXT DEFAULT (now_text()),
     submitted_at     TEXT,
     resolved_at      TEXT
 );
@@ -273,7 +276,7 @@ CREATE INDEX idx_feedback_project ON auditor_feedback(project_id);
 -- เขียนโดย middleware ตอน runtime (src/audit_log.py) เริ่มว่างเปล่าใน seed; append-only (ไม่มี UPDATE/DELETE)
 -- username/role เก็บแบบ denormalize เพื่อคง snapshot ณ เวลาที่เกิด action (role อาจเปลี่ยนภายหลัง)
 CREATE TABLE access_log (
-    log_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    log_id        INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     username      TEXT,
     role          TEXT,
     action        TEXT NOT NULL,        -- login / view_list / view_detail / export / other (derive จาก method+path)
@@ -284,7 +287,7 @@ CREATE TABLE access_log (
     status_code   INTEGER,
     ip            TEXT,
     user_agent    TEXT,
-    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at    TEXT NOT NULL DEFAULT (now_text())
 );
 CREATE INDEX idx_access_log_user_time ON access_log(username, created_at);
 CREATE INDEX idx_access_log_time      ON access_log(created_at);
@@ -595,8 +598,9 @@ def seed_vendors(cur, proj_rows):
         else:
             # TIN เสียจาก Excel (9.33543E+11) หรือปกปิดบางส่วน (xxxx) → masked
             masked = 1 if ("E+" in tin.upper() or "x" in tin.lower()) else 0
-        cur.execute("INSERT OR IGNORE INTO vendors (name, tin, tin_masked) VALUES (?,?,?)",
-                    (name, tin, masked))
+        cur.execute(
+            "INSERT INTO vendors (name, tin, tin_masked) VALUES (?,?,?) ON CONFLICT (name) DO NOTHING",
+            (name, tin, masked))
     n = cur.execute("SELECT COUNT(*) FROM vendors").fetchone()[0]
     nm = cur.execute("SELECT COUNT(*) FROM vendors WHERE tin_masked=1").fetchone()[0]
     log(f"vendors: {n} ราย (TIN ไม่สมบูรณ์ {nm} ราย — dedup ด้วยชื่อ)")
@@ -1194,17 +1198,31 @@ def cross_check_pingkhong(cur):
 # 8. Main
 # ---------------------------------------------------------------------------
 
-def main():
-    ap = argparse.ArgumentParser(description="สร้าง + seed + รัน risk engine ลง SQLite")
-    ap.add_argument("--db", default=os.path.join(BASE_DIR, "fraud_risk.db"))
-    ap.add_argument("--force", action="store_true", help="ลบ db เดิมก่อนสร้างใหม่")
-    args = ap.parse_args()
+def exec_ddl(cur, sql: str) -> None:
+    """psycopg ไม่มี executescript — ตัดคอมเมนต์ `--` ทิ้งก่อน (กันเคส comment มี `;` ปนอยู่)
+    แล้วแตก DDL หลาย statement ด้วย `;` รันทีละคำสั่ง"""
+    lines = []
+    for line in sql.splitlines():
+        idx = line.find("--")
+        lines.append(line[:idx] if idx != -1 else line)
+    for statement in "\n".join(lines).split(";"):
+        statement = statement.strip()
+        if statement:
+            cur.execute(statement)
 
-    if os.path.exists(args.db):
-        if args.force:
-            os.remove(args.db)
-        else:
-            sys.exit(f"มี {args.db} อยู่แล้ว — ใช้ --force เพื่อสร้างใหม่")
+
+def _tables_exist(cur) -> bool:
+    cur.execute(
+        "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' "
+        "AND table_name = 'subdistricts'"
+    )
+    return cur.fetchone() is not None
+
+
+def main():
+    ap = argparse.ArgumentParser(description="สร้าง schema + seed + รัน risk engine ลง PostgreSQL")
+    ap.add_argument("--force", action="store_true", help="ลบตารางเดิมทั้งหมดก่อนสร้างใหม่")
+    args = ap.parse_args()
 
     for f in (PROJECTS_CSV, FINANCIAL_CSV):
         if not os.path.exists(f):
@@ -1215,12 +1233,19 @@ def main():
     fin_rows = read_csv_clean(FINANCIAL_CSV)
     log(f"projects_ALL_master: {len(proj_rows)} แถว | financial_report_ALL_master: {len(fin_rows)} แถว")
 
-    con = sqlite3.connect(args.db)
-    con.execute("PRAGMA foreign_keys = ON")
+    con = _connect()
     cur = con.cursor()
 
+    if _tables_exist(cur):
+        if args.force:
+            cur.execute("DROP SCHEMA public CASCADE")
+            cur.execute("CREATE SCHEMA public")
+            con.commit()
+        else:
+            sys.exit("มี schema เดิมอยู่แล้วใน DATABASE_URL นี้ — ใช้ --force เพื่อลบแล้วสร้างใหม่")
+
     print("[2/5] สร้าง schema (DDL §3–§8)")
-    cur.executescript(DDL)
+    exec_ddl(cur, DDL)
 
     print("[3/5] Seed ตามลำดับ §9.1")
     sub_id = seed_master_data(cur, proj_rows, fin_rows)
@@ -1238,9 +1263,11 @@ def main():
          for r in cur.execute("""SELECT factor_code, scope, params_json, weight, severity,
               impact_level, legal_ref, enabled FROM risk_factors""")],
         ensure_ascii=False)
-    cur.execute("INSERT INTO assessment_runs (triggered_by, factor_config_snapshot, note) VALUES (?,?,?)",
-                ("system", snapshot, "initial seed run"))
-    run_id = cur.lastrowid
+    cur.execute(
+        """INSERT INTO assessment_runs (triggered_by, factor_config_snapshot, note)
+           VALUES (?,?,?) RETURNING run_id""",
+        ("system", snapshot, "initial seed run"))
+    run_id = cur.fetchone()["run_id"]
     run_project_engine(cur, run_id)
     run_annual_engine(cur, run_id)
     seed_auditor_feedback(cur)  # หลัง engine — เลือกโครงการจาก risk score จริง
@@ -1261,7 +1288,7 @@ def main():
     con.close()
     if not ok:
         sys.exit("\nVALIDATION FAILED — ตรวจรายการ [FAIL] ด้านบน")
-    print(f"\nเสร็จสมบูรณ์ → {args.db}")
+    print("\nเสร็จสมบูรณ์ → PostgreSQL (DATABASE_URL)")
 
 
 if __name__ == "__main__":

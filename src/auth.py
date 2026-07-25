@@ -14,11 +14,10 @@ Scope rule (ตาม roles.md — สิทธิ์/scope บังคับ�
                                                          (subdistrict_id ของ user)
 """
 import hashlib
-import sqlite3
 
 from fastapi import Depends, Header, HTTPException, status
 
-from .database import get_db
+from .database import Connection, get_db
 
 # role ที่เห็นเฉพาะตำบลของตัวเอง (ตาม roles.md) — role อื่น (admin/regional_supervisor/public_user) เห็นทุกตำบล
 SCOPED_ROLES = {"local_executive", "project_auditor", "risk_analyst"}
@@ -28,7 +27,7 @@ def sha256(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 
-def verify_login(conn: sqlite3.Connection, username: str, password: str) -> dict | None:
+def verify_login(conn: Connection, username: str, password: str) -> dict | None:
     row = conn.execute(
         "SELECT user_id, username, display_name, role, subdistrict_id, password_hash "
         "FROM users WHERE username = ?",
@@ -43,7 +42,7 @@ def verify_login(conn: sqlite3.Connection, username: str, password: str) -> dict
 
 def get_current_user(
     x_username: str | None = Header(default=None, alias="X-Username"),
-    conn: sqlite3.Connection = Depends(get_db),
+    conn: Connection = Depends(get_db),
 ) -> dict:
     """
     Mock auth dependency: อ่าน username จาก header `X-Username`.
@@ -78,7 +77,7 @@ def require_roles(*allowed: str):
     return _guard
 
 
-def scope_subdistrict_ids(conn: sqlite3.Connection, user: dict) -> list[int] | None:
+def scope_subdistrict_ids(conn: Connection, user: dict) -> list[int] | None:
     """
     คืน list ของ subdistrict_id ที่ user เห็นได้.
     None = เห็นได้ทุกตำบล (ไม่ต้อง filter)

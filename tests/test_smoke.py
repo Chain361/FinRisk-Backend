@@ -10,7 +10,7 @@ client = TestClient(app)
 def test_health():
     r = client.get("/health")
     assert r.status_code == 200
-    assert r.json()["db_exists"] is True
+    assert r.json()["db_connected"] is True
 
 
 def test_meta():
@@ -179,15 +179,10 @@ def test_feedback_public_forbidden():
 
 
 def test_roles_seeded():
-    import sqlite3
+    from src.database import db_session
 
-    from src.config import DB_PATH
-
-    con = sqlite3.connect(str(DB_PATH))
-    try:
+    with db_session() as con:
         assert con.execute("SELECT COUNT(*) FROM roles").fetchone()[0] == 6
-    finally:
-        con.close()
 
 
 def test_wrong_password():
@@ -197,9 +192,7 @@ def test_wrong_password():
 
 def test_auditor_can_create_assignment_with_history():
     """Assignment data belongs to the backend and is visible to the assignee."""
-    import sqlite3
-
-    from src.config import DB_PATH
+    from src.database import db_session
 
     auditor_headers = {"X-Username": "auditor1"}
     analysts = client.get("/audit/assignments/assignees", headers=auditor_headers)
@@ -253,10 +246,7 @@ def test_auditor_can_create_assignment_with_history():
         missing = client.get(f"/audit/assignments/{assignment_id}", headers={"X-Username": "admin"})
         assert missing.status_code == 404
     finally:
-        con = sqlite3.connect(str(DB_PATH))
-        try:
+        with db_session() as con:
             con.execute("DELETE FROM assignment_status_history WHERE assignment_id = ?", (assignment_id,))
             con.execute("DELETE FROM assignments WHERE assignment_id = ?", (assignment_id,))
             con.commit()
-        finally:
-            con.close()

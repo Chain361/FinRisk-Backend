@@ -4,7 +4,7 @@
 จากข้อมูลจัดซื้อจัดจ้าง (e-GP) และงบการเงิน โดยรัน "risk engine" ให้คะแนนความเสี่ยง
 รายโครงการและรายปีงบประมาณ แล้วเปิดให้ผู้ใช้แต่ละบทบาทเข้ามาตรวจสอบ/มอบหมายงานต่อ
 
-> Repository นี้เป็น **backend** (Python + FastAPI + SQLite) — คู่มือนี้สำหรับ dev ที่เพิ่งเข้ามาทำงาน
+> Repository นี้เป็น **backend** (Python + FastAPI + PostgreSQL) — คู่มือนี้สำหรับ dev ที่เพิ่งเข้ามาทำงาน
 
 ---
 
@@ -24,27 +24,31 @@
 
 ## 2. Quick start
 
-ต้องมี **Python 3.10+**
+ต้องมี **Python 3.10+** และ **PostgreSQL** รันอยู่ (local: `brew install postgresql@18` หรือเทียบเท่า)
 
 ```bash
-# 1) (แนะนำ) สร้าง virtual env
+# 1) สร้าง database เปล่าไว้ก่อน (ครั้งแรกเท่านั้น)
+createdb finrisk_dev
+
+# 2) (แนะนำ) สร้าง virtual env
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 
-# 2) ติดตั้ง dependency ของ API
+# 3) ติดตั้ง dependency (รวม psycopg driver)
 pip install -r requirements.txt
 
-# 3) สร้างฐานข้อมูล + seed ข้อมูล + รัน risk engine ครั้งแรก
-python seed_database.py            # ได้ไฟล์ fraud_risk.db
+# 4) สร้าง schema + seed ข้อมูล + รัน risk engine ครั้งแรก
+python seed_database.py
 
-# 4) รัน API
+# 5) รัน API
 uvicorn src.main:app --reload
 ```
 
 เปิดเอกสาร API อัตโนมัติที่ **http://127.0.0.1:8000/docs**
 ตรวจสุขภาพระบบที่ **http://127.0.0.1:8000/health**
 
-> `seed_database.py` ใช้ **Python stdlib ล้วน** (ไม่ต้อง `pip install`) — ตัว API เท่านั้นที่ต้องใช้ `requirements.txt`
+> DB connection อ่านจาก env var `DATABASE_URL` (default: `postgresql://localhost/finrisk_dev`)
+> ตั้งค่าต่างออกไปได้ถ้า database ชื่ออื่น/อยู่เครื่องอื่น — ดู `src/config.py`
 
 ---
 
@@ -55,7 +59,7 @@ data_modelling/
 ├─ src/                         # โค้ด backend (FastAPI)
 │  ├─ main.py                   # entry point — รวม router + CORS + /health
 │  ├─ config.py                 # path DB, CORS origin, ค่าคงที่
-│  ├─ database.py               # ตัวช่วยต่อ SQLite (dependency get_db)
+│  ├─ database.py               # ตัวช่วยต่อ PostgreSQL (dependency get_db)
 │  ├─ auth.py                   # mock login + role/scope guard
 │  ├─ schemas.py                # Pydantic models
 │  └─ routers/                  # endpoint แยกตามโดเมน
@@ -65,8 +69,7 @@ data_modelling/
 │     ├─ risk.py                # /risk/factors, /risk/annual, /risk/summary
 │     └─ audit.py               # /audit/assignments, /audit/feedback
 ├─ tests/test_smoke.py          # smoke test (pytest)
-├─ seed_database.py             # สร้าง DB + seed + รัน risk engine + validate
-├─ fraud_risk.db                # SQLite (สร้างจาก seed — ไม่ commit ตาม .gitignore)
+├─ seed_database.py             # สร้าง schema บน PostgreSQL + seed + รัน risk engine + validate
 ├─ standardized_data/           # CSV กลางที่ seed อ่านเข้า
 │  ├─ projects_ALL_master.csv          (98 แถว → 97 โครงการหลัง dedup)
 │  └─ financial_report_ALL_master.csv  (337 แถว)
@@ -80,7 +83,7 @@ data_modelling/
 
 ## 4. Data model โดยย่อ
 
-ฐานข้อมูล SQLite เดียว (`fraud_risk.db`) 15 ตาราง แบ่งเป็น 4 กลุ่ม:
+ฐานข้อมูล PostgreSQL เดียว (ตาม `DATABASE_URL`) 15+ ตาราง แบ่งเป็น 4 กลุ่ม:
 
 **Master data** — `subdistricts` (3 ตำบล), `vendors` (57 ราย), `projects` (97 โครงการ),
 `financial_statements` (337 บรรทัดงบการเงิน), `roles` (6 บทบาท ตาม `roles.md`), `users` (8 mock users)
@@ -154,7 +157,7 @@ curl http://127.0.0.1:8000/subdistricts            -H "X-Username: public1"   # 
 ## 7. เทสต์
 
 ```bash
-pytest -q                # รัน smoke test (ต้องมี fraud_risk.db แล้ว)
+pytest -q                # รัน smoke test (ต้องมี postgres รันอยู่ + seed แล้ว)
 ```
 
 ---
@@ -173,7 +176,8 @@ pytest -q                # รัน smoke test (ต้องมี fraud_risk.d
 
 ## 9. งานที่ยังต้องทำต่อ (สำหรับ dev ใหม่)
 
-- เติม business logic ของ `/audit/*` (สร้าง assignment, ส่ง audit_report) — ตอนนี้เป็นโครง read-only
 - เปลี่ยน mock auth เป็น JWT + password hashing จริง
 - เพิ่ม endpoint สำหรับ "รัน risk engine ใหม่" (ตอนนี้รันผ่าน `seed_database.py` เท่านั้น)
 - ส่วน "Document Intelligence" (อ่านเอกสาร/OCR) ตามชื่อ Mission ยังไม่ได้เริ่ม
+- deploy จริง: ต้อง provision PostgreSQL แบบ persistent (เช่น Neon/Supabase/RDS) แล้วตั้ง
+  `DATABASE_URL` บน Vercel — ยังไม่ได้ provision

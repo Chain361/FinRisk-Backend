@@ -1,11 +1,9 @@
 # -*- coding: utf-8 -*-
 """/financial-statements — งบการเงินตามตำบล"""
-import sqlite3
-
 from fastapi import APIRouter, Depends, Query
 
 from ..auth import get_current_user, scope_subdistrict_ids
-from ..database import get_db, rows_to_dicts
+from ..database import Connection, get_db, rows_to_dicts
 
 router = APIRouter(tags=["financials"])
 
@@ -18,7 +16,7 @@ def list_financial_statements(
     category: str | None = Query(default=None),
     account_item: str | None = Query(default=None),
     user: dict = Depends(get_current_user),
-    conn: sqlite3.Connection = Depends(get_db),
+    conn: Connection = Depends(get_db),
 ):
     allowed = scope_subdistrict_ids(conn, user)
     where, params = [], []

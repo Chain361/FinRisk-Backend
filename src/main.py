@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from .audit_log import record_access, should_log
-from .config import API_TITLE, API_VERSION, CORS_ORIGINS, DB_PATH
+from .config import API_TITLE, API_VERSION, CORS_ORIGINS
 from .database import _connect
 from .routers import audit, auth, financials, projects, risk, subdistricts
 
@@ -58,7 +58,15 @@ app.include_router(financials.router)
 
 @app.get("/health", tags=["meta"])
 def health():
-    return {"status": "ok", "db": str(DB_PATH), "db_exists": DB_PATH.exists()}
+    try:
+        conn = _connect()
+        try:
+            conn.execute("SELECT 1")
+        finally:
+            conn.close()
+        return {"status": "ok", "db": "postgresql", "db_connected": True}
+    except Exception as exc:  # noqa: BLE001 — health check ต้องไม่ throw, บอกสถานะผ่าน body แทน
+        return {"status": "error", "db": "postgresql", "db_connected": False, "detail": str(exc)}
 
 
 @app.get("/meta", tags=["meta"])

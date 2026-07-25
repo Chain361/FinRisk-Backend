@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
 """Audit assignments, workflow history, feedback, and access-log endpoints."""
-import sqlite3
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from ..auth import require_roles, scope_subdistrict_ids
-from ..database import get_db, rows_to_dicts
+from ..database import Connection, SqliteLikeRow, get_db, rows_to_dicts
 from ..schemas import (
     AssignmentCreate,
     AssignmentStatusUpdate,
@@ -24,11 +23,11 @@ RESOLVE_ROLES = ("admin", "project_auditor")
 
 
 def _now_str() -> str:
-    """รูปแบบเดียวกับ sqlite `datetime('now')` (UTC, 'YYYY-MM-DD HH:MM:SS')"""
+    """รูปแบบเดียวกับ SQL `now_text()` (UTC, 'YYYY-MM-DD HH:MM:SS')"""
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _serialize_feedback(row: sqlite3.Row) -> dict:
+def _serialize_feedback(row: SqliteLikeRow) -> dict:
     """เติม risk_score (คำนวณจาก likelihood_score × impact_score ไม่เก็บเป็นคอลัมน์แยก)"""
     data = dict(row)
     likelihood = data.get("likelihood_score")
@@ -37,7 +36,7 @@ def _serialize_feedback(row: sqlite3.Row) -> dict:
     return data
 
 
-def _fetch_feedback(conn: sqlite3.Connection, feedback_id: int) -> dict:
+def _fetch_feedback(conn: Connection, feedback_id: int) -> dict:
     row = conn.execute(
         """SELECT f.*, u.username AS auditor_username, u.display_name AS auditor_name
            FROM auditor_feedback f JOIN users u ON u.user_id = f.user_id
@@ -83,7 +82,7 @@ ASSIGNMENT_SELECT = """
 """
 
 
-def _project_in_scope(conn: sqlite3.Connection, project_id: str, user: dict) -> sqlite3.Row:
+def _project_in_scope(conn: Connection, project_id: str, user: dict) -> SqliteLikeRow:
     project = conn.execute(
         "SELECT project_id, subdistrict_id FROM projects WHERE project_id = ?",
         (project_id,),
@@ -96,7 +95,7 @@ def _project_in_scope(conn: sqlite3.Connection, project_id: str, user: dict) -> 
     return project
 
 
-def _assignment_in_scope(conn: sqlite3.Connection, assignment_id: int, user: dict) -> sqlite3.Row:
+def _assignment_in_scope(conn: Connection, assignment_id: int, user: dict) -> SqliteLikeRow:
     assignment = conn.execute(
         """SELECT a.*, p.subdistrict_id
            FROM assignments a JOIN projects p ON p.project_id = a.project_id
@@ -115,7 +114,7 @@ def _assignment_in_scope(conn: sqlite3.Connection, assignment_id: int, user: dic
     return assignment
 
 
-def _assignee_for_project(conn: sqlite3.Connection, assignee_id: int, project: sqlite3.Row) -> sqlite3.Row:
+def _assignee_for_project(conn: Connection, assignee_id: int, project: SqliteLikeRow) -> SqliteLikeRow:
     assignee = conn.execute(
         "SELECT user_id, role, subdistrict_id FROM users WHERE user_id = ?",
         (assignee_id,),
@@ -127,7 +126,7 @@ def _assignee_for_project(conn: sqlite3.Connection, assignee_id: int, project: s
     return assignee
 
 
-def _assignment_detail(conn: sqlite3.Connection, assignment_id: int) -> dict:
+def _assignment_detail(conn: Connection, assignment_id: int) -> dict:
     row = conn.execute(
         ASSIGNMENT_SELECT + " WHERE a.assignment_id = ?",
         (assignment_id,),
@@ -137,7 +136,7 @@ def _assignment_detail(conn: sqlite3.Connection, assignment_id: int) -> dict:
     return dict(row)
 
 
-def _visible_assignments(conn: sqlite3.Connection, user: dict) -> list[dict]:
+def _visible_assignments(conn: Connection, user: dict) -> list[dict]:
     if user["role"] == "risk_analyst":
         rows = conn.execute(
             ASSIGNMENT_SELECT + " WHERE a.assigned_to = ? ORDER BY a.created_at DESC",
@@ -157,7 +156,7 @@ def _visible_assignments(conn: sqlite3.Connection, user: dict) -> list[dict]:
 @router.get("/assignments/assignees")
 def assignment_assignees(
     user: dict = Depends(require_roles("admin", "project_auditor")),
-    conn: sqlite3.Connection = Depends(get_db),
+    conn: Connection = Depends(get_db),
 ):
     """Return risk analysts that the current user may assign work to."""
     scope = scope_subdistrict_ids(conn, user)
@@ -183,7 +182,7 @@ def assignment_assignees(
 @router.get("/assignments/my")
 def my_assignments(
     user: dict = Depends(require_roles("admin", "regional_supervisor", "project_auditor", "risk_analyst")),
-    conn: sqlite3.Connection = Depends(get_db),
+    conn: Connection = Depends(get_db),
 ):
     """Return work visible to the current user; analysts only receive their own work."""
     return _visible_assignments(conn, user)
@@ -192,7 +191,7 @@ def my_assignments(
 @router.get("/assignments")
 def list_assignments(
     user: dict = Depends(require_roles("admin", "regional_supervisor", "project_auditor", "risk_analyst")),
-    conn: sqlite3.Connection = Depends(get_db),
+    conn: Connection = Depends(get_db),
 ):
     return _visible_assignments(conn, user)
 
@@ -201,7 +200,7 @@ def list_assignments(
 def create_assignment(
     payload: AssignmentCreate,
     user: dict = Depends(require_roles("admin", "project_auditor")),
-    conn: sqlite3.Connection = Depends(get_db),
+    conn: Connection = Depends(get_db),
 ):
     project = _project_in_scope(conn, payload.project_id, user)
     _assignee_for_project(conn, payload.assignee_id, project)
@@ -214,11 +213,12 @@ def create_assignment(
     cursor = conn.execute(
         """INSERT INTO assignments
            (project_id, assigned_to, assigned_by, priority, note, due_date, status)
-           VALUES (?,?,?,?,?,?, 'waiting_acceptance')""",
+           VALUES (?,?,?,?,?,?, 'waiting_acceptance')
+           RETURNING assignment_id""",
         (payload.project_id, payload.assignee_id, user["user_id"], payload.priority,
          payload.note, payload.due_date),
     )
-    assignment_id = cursor.lastrowid
+    assignment_id = cursor.fetchone()["assignment_id"]
     conn.execute(
         """INSERT INTO assignment_status_history
            (assignment_id, old_status, new_status, changed_by, note)
@@ -233,7 +233,7 @@ def create_assignment(
 def get_assignment(
     assignment_id: int,
     user: dict = Depends(require_roles("admin", "regional_supervisor", "project_auditor", "risk_analyst")),
-    conn: sqlite3.Connection = Depends(get_db),
+    conn: Connection = Depends(get_db),
 ):
     _assignment_in_scope(conn, assignment_id, user)
     history = conn.execute(
@@ -252,7 +252,7 @@ def update_assignment(
     assignment_id: int,
     payload: AssignmentUpdate,
     user: dict = Depends(require_roles("admin", "project_auditor")),
-    conn: sqlite3.Connection = Depends(get_db),
+    conn: Connection = Depends(get_db),
 ):
     assignment = _assignment_in_scope(conn, assignment_id, user)
     if assignment["status"] != "waiting_acceptance":
@@ -267,7 +267,7 @@ def update_assignment(
     columns = list(values)
     set_clause = ", ".join(f"{column} = ?" for column in columns)
     conn.execute(
-        f"UPDATE assignments SET {set_clause}, updated_at = datetime('now') WHERE assignment_id = ?",
+        f"UPDATE assignments SET {set_clause}, updated_at = now_text() WHERE assignment_id = ?",
         [values[column] for column in columns] + [assignment_id],
     )
     conn.commit()
@@ -279,7 +279,7 @@ def update_assignment_status(
     assignment_id: int,
     payload: AssignmentStatusUpdate,
     user: dict = Depends(require_roles("admin", "project_auditor", "risk_analyst")),
-    conn: sqlite3.Connection = Depends(get_db),
+    conn: Connection = Depends(get_db),
 ):
     assignment = _assignment_in_scope(conn, assignment_id, user)
     current_status = assignment["status"]
@@ -295,7 +295,7 @@ def update_assignment_status(
     if next_status not in allowed:
         raise HTTPException(status_code=409, detail=f"ไม่สามารถเปลี่ยนสถานะจาก {current_status} เป็น {next_status} ได้")
     conn.execute(
-        "UPDATE assignments SET status = ?, updated_at = datetime('now') WHERE assignment_id = ?",
+        "UPDATE assignments SET status = ?, updated_at = now_text() WHERE assignment_id = ?",
         (next_status, assignment_id),
     )
     conn.execute(
@@ -312,7 +312,7 @@ def update_assignment_status(
 def delete_assignment(
     assignment_id: int,
     user: dict = Depends(require_roles("admin")),
-    conn: sqlite3.Connection = Depends(get_db),
+    conn: Connection = Depends(get_db),
 ):
     _assignment_in_scope(conn, assignment_id, user)
     conn.execute("DELETE FROM assignment_status_history WHERE assignment_id = ?", (assignment_id,))
@@ -324,7 +324,7 @@ def delete_assignment(
 @router.get("/feedback", response_model=list[AuditorFeedbackOut])
 def list_feedback(
     user: dict = Depends(require_roles(*FEEDBACK_ROLES)),
-    conn: sqlite3.Connection = Depends(get_db),
+    conn: Connection = Depends(get_db),
 ):
     """feedback ทั้งหมดที่ user เห็นได้ (scope ตามตำบลเหมือน /projects) — ใช้แสดงสถานะบนรายการโครงการ
     โดยไม่ต้องยิง request แยกทีละโครงการ"""
@@ -353,7 +353,7 @@ def list_feedback(
 def project_feedback(
     project_id: str,
     _: dict = Depends(require_roles("admin", "regional_supervisor", "local_executive", "project_auditor", "risk_analyst")),
-    conn: sqlite3.Connection = Depends(get_db),
+    conn: Connection = Depends(get_db),
 ):
     rows = conn.execute(
         """SELECT f.*, u.username AS auditor_username, u.display_name AS auditor_name
@@ -368,7 +368,7 @@ def project_feedback(
 def create_feedback(
     body: AuditorFeedbackIn,
     user: dict = Depends(require_roles(*FEEDBACK_ROLES)),
-    conn: sqlite3.Connection = Depends(get_db),
+    conn: Connection = Depends(get_db),
 ):
     project = conn.execute(
         "SELECT 1 FROM projects WHERE project_id = ?", (body.project_id,)
@@ -381,7 +381,8 @@ def create_feedback(
         """INSERT INTO auditor_feedback
            (project_id, user_id, feedback_text, concern_level, likelihood_score, impact_score,
             suggestions, status, created_at, updated_at, submitted_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)
+           RETURNING feedback_id""",
         (
             body.project_id,
             user["user_id"],
@@ -396,8 +397,9 @@ def create_feedback(
             now if body.status == "submitted" else None,
         ),
     )
+    feedback_id = cur.fetchone()["feedback_id"]
     conn.commit()
-    return _fetch_feedback(conn, cur.lastrowid)
+    return _fetch_feedback(conn, feedback_id)
 
 
 @router.patch("/feedback/{feedback_id}", response_model=AuditorFeedbackOut)
@@ -405,7 +407,7 @@ def update_feedback(
     feedback_id: int,
     body: AuditorFeedbackIn,
     user: dict = Depends(require_roles(*FEEDBACK_ROLES)),
-    conn: sqlite3.Connection = Depends(get_db),
+    conn: Connection = Depends(get_db),
 ):
     row = conn.execute(
         "SELECT user_id, status, submitted_at FROM auditor_feedback WHERE feedback_id = ?",
@@ -445,7 +447,7 @@ def update_feedback(
 def delete_feedback(
     feedback_id: int,
     user: dict = Depends(require_roles(*FEEDBACK_ROLES)),
-    conn: sqlite3.Connection = Depends(get_db),
+    conn: Connection = Depends(get_db),
 ):
     row = conn.execute(
         "SELECT user_id FROM auditor_feedback WHERE feedback_id = ?", (feedback_id,)
@@ -464,7 +466,7 @@ def delete_feedback(
 def resolve_feedback(
     feedback_id: int,
     _: dict = Depends(require_roles(*RESOLVE_ROLES)),
-    conn: sqlite3.Connection = Depends(get_db),
+    conn: Connection = Depends(get_db),
 ):
     row = conn.execute(
         "SELECT feedback_id FROM auditor_feedback WHERE feedback_id = ?", (feedback_id,)
@@ -484,7 +486,7 @@ def resolve_feedback(
 @router.get("/access-log")
 def access_log(
     _: dict = Depends(require_roles("admin")),
-    conn: sqlite3.Connection = Depends(get_db),
+    conn: Connection = Depends(get_db),
     username: str | None = None,
     action: str | None = None,
     resource_type: str | None = None,
@@ -508,8 +510,8 @@ def access_log(
         where.append("created_at >= ?")
         params.append(date_from)
     if date_to:
-        where.append("created_at < date(?, '+1 day')")
-        params.append(date_to)
+        where.append("created_at < ?")
+        params.append((date.fromisoformat(date_to) + timedelta(days=1)).isoformat())
     clause = (" WHERE " + " AND ".join(where)) if where else ""
     total = conn.execute(f"SELECT COUNT(*) FROM access_log{clause}", params).fetchone()[0]
     rows = conn.execute(

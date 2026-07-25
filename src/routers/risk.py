@@ -1,16 +1,14 @@
 # -*- coding: utf-8 -*-
 """/risk — ผลการประเมินความเสี่ยง (project + annual) และรายการ risk factor"""
-import sqlite3
-
 from fastapi import APIRouter, Depends
 
 from ..auth import get_current_user, scope_subdistrict_ids
-from ..database import get_db, rows_to_dicts
+from ..database import Connection, get_db, rows_to_dicts
 
 router = APIRouter(prefix="/risk", tags=["risk"])
 
 
-def _latest_run_id(conn: sqlite3.Connection) -> int | None:
+def _latest_run_id(conn: Connection) -> int | None:
     row = conn.execute(
         "SELECT run_id FROM assessment_runs ORDER BY run_id DESC LIMIT 1"
     ).fetchone()
@@ -20,7 +18,7 @@ def _latest_run_id(conn: sqlite3.Connection) -> int | None:
 @router.get("/factors")
 def list_factors(
     _: dict = Depends(get_current_user),
-    conn: sqlite3.Connection = Depends(get_db),
+    conn: Connection = Depends(get_db),
 ):
     rows = conn.execute("SELECT * FROM risk_factors ORDER BY scope, factor_code").fetchall()
     return rows_to_dicts(rows)
@@ -29,7 +27,7 @@ def list_factors(
 @router.get("/annual")
 def annual_results(
     user: dict = Depends(get_current_user),
-    conn: sqlite3.Connection = Depends(get_db),
+    conn: Connection = Depends(get_db),
 ):
     run_id = _latest_run_id(conn)
     allowed = scope_subdistrict_ids(conn, user)
@@ -56,7 +54,7 @@ def annual_results(
 @router.get("/summary")
 def summary(
     user: dict = Depends(get_current_user),
-    conn: sqlite3.Connection = Depends(get_db),
+    conn: Connection = Depends(get_db),
 ):
     """นับจำนวนโครงการตามระดับความเสี่ยง (ใช้ทำ dashboard)"""
     run_id = _latest_run_id(conn)

@@ -1,8 +1,8 @@
 # Data Model Design — Local Budget Fraud Risk & Document Intelligence Assistant
 
-**Target DB:** SQLite (prototype 1 เดือน ตาม Mission 3)
+**Target DB:** PostgreSQL (ย้ายจาก SQLite prototype เดิม ก.ค. 2569 — persistent storage สำหรับ production)
 **Input:** `projects_ALL_master.csv` (98 โครงการ), `financial_report_ALL_master.csv` (337 แถว) — 3 ตำบล ปีงบ 2566–2568
-**สถานะเอกสาร:** พร้อมให้ AI/dev นำไปสร้าง database และ seed ข้อมูลได้ทันที (DDL รันผ่าน SQLite แล้ว) — อัปเดต ก.ค. 2569: รวม annual factor Y1–Y3 (§5.1, §5.5, §11) จาก `Risk Factor Design ระดับงบรายปี.md`
+**สถานะเอกสาร:** พร้อมให้ AI/dev นำไปสร้าง database และ seed ข้อมูลได้ทันที (DDL รันผ่าน PostgreSQL แล้ว) — อัปเดต ก.ค. 2569: รวม annual factor Y1–Y3 (§5.1, §5.5, §11) จาก `Risk Factor Design ระดับงบรายปี.md`
 
 ---
 
@@ -54,10 +54,10 @@ ERD ฉบับเต็ม (มีคอลัมน์): ดูไฟล์ `
 | วันที่ | TEXT รูปแบบ ISO `YYYY-MM-DD` (ค.ศ.) — ต้องแปลงตอน seed (ดู §9) |
 | เงิน | REAL หน่วยบาท |
 | boolean | INTEGER 0/1 |
-| JSON | เก็บใน TEXT (SQLite รองรับ `json_extract`) ใช้กับ threshold ของ factor และ evidence |
+| JSON | เก็บใน TEXT (ใช้ `->>`/`::json` เมื่อต้อง query ใน SQL) ใช้กับ threshold ของ factor และ evidence |
 | เลขผู้เสียภาษี (TIN) | **TEXT เท่านั้น** — ห้าม numeric (ต้นฉบับโดน Excel แปลงเป็น 9.33543E+11 ไปแล้ว ดู §9.3) |
-| FK | เปิด `PRAGMA foreign_keys = ON;` ทุก connection |
-| Permission | SQLite ไม่มี row-level security → บังคับที่ app layer (ดู §12) |
+| FK | PostgreSQL บังคับ FK เสมอ (ไม่ต้องเปิดเหมือน SQLite) |
+| Permission | PostgreSQL ไม่ได้เปิด row-level security ในสคีมานี้ → บังคับที่ app layer (ดู §12) |
 
 ---
 
@@ -67,7 +67,7 @@ ERD ฉบับเต็ม (มีคอลัมน์): ดูไฟล์ `
 
 ```sql
 CREATE TABLE subdistricts (
-    subdistrict_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    subdistrict_id   INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name_th          TEXT NOT NULL UNIQUE,          -- ท่าช้าง / ปิงโค้ง / โยนก
     municipality_name TEXT,                          -- เทศบาลตำบลท่าช้าง (จากไฟล์งบการเงิน)
     district         TEXT,                           -- อำเภอ
@@ -82,7 +82,7 @@ Seed: 3 แถว (ท่าช้าง/บางกล่ำ/สงขลา, 
 
 ```sql
 CREATE TABLE vendors (
-    vendor_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    vendor_id   INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name        TEXT NOT NULL,
     tin         TEXT,                -- อาจถูกปกปิดบางส่วน (xxxx) หรือเสียจาก Excel
     tin_masked  INTEGER DEFAULT 0,   -- 1 = TIN ไม่สมบูรณ์ ใช้ name จับคู่แทน
@@ -103,13 +103,13 @@ CREATE TABLE roles (
 );
 
 CREATE TABLE users (
-    user_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id        INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     username       TEXT NOT NULL UNIQUE,
     password_hash  TEXT NOT NULL,               -- mock login ได้ตาม scope
     display_name   TEXT,
     role           TEXT NOT NULL REFERENCES roles(role_code),
     subdistrict_id INTEGER REFERENCES subdistricts(subdistrict_id),  -- NULL สำหรับ role ที่เห็นทุกตำบล
-    created_at     TEXT DEFAULT (datetime('now'))
+    created_at     TEXT DEFAULT (now_text())
 );
 ```
 
@@ -167,7 +167,7 @@ CREATE INDEX idx_projects_vendor   ON projects(vendor_id);
 
 ```sql
 CREATE TABLE financial_statements (
-    fs_id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    fs_id            INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     subdistrict_id   INTEGER NOT NULL REFERENCES subdistricts(subdistrict_id),
     fiscal_year      INTEGER NOT NULL,              -- พ.ศ.
     statement_type   TEXT NOT NULL,                 -- งบแสดงฐานะการเงิน / งบแสดงผลการดำเนินงาน / งบประมาณตามหมวด / สินทรัพย์ถาวรเพิ่มระหว่างปี / ตัวชี้วัดความเสี่ยง
@@ -207,7 +207,7 @@ CREATE TABLE risk_factors (
     legal_ref     TEXT,                             -- ฐานกฎหมาย/ระเบียบอ้างอิง (⚠️ ให้ฝ่ายกฎหมายยืนยันเลขมาตรา/ข้อ)
     data_requirement TEXT,                          -- คอลัมน์ที่ต้องมี → บอกได้ว่าตำบลไหนคำนวณไม่ได้
     enabled       INTEGER NOT NULL DEFAULT 1,
-    created_at    TEXT DEFAULT (datetime('now'))
+    created_at    TEXT DEFAULT (now_text())
 );
 ```
 
@@ -239,8 +239,8 @@ params_json ของ Y1–Y3 เก็บ 2 ส่วน: (1) threshold ต่�
 
 ```sql
 CREATE TABLE assessment_runs (
-    run_id       INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    run_id       INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    run_at       TEXT NOT NULL DEFAULT (now_text()),
     triggered_by TEXT,                              -- 'system' หรือ user_id
     factor_config_snapshot TEXT,                    -- JSON snapshot ของ risk_factors ณ ตอนรัน (reproducibility)
     note         TEXT
@@ -251,7 +251,7 @@ CREATE TABLE assessment_runs (
 
 ```sql
 CREATE TABLE project_risk_results (
-    result_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    result_id     INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     run_id        INTEGER NOT NULL REFERENCES assessment_runs(run_id),
     project_id    TEXT NOT NULL REFERENCES projects(project_id),
     factor_code   TEXT NOT NULL REFERENCES risk_factors(factor_code),
@@ -275,7 +275,7 @@ CREATE INDEX idx_prr_project ON project_risk_results(project_id, run_id);
 
 ```sql
 CREATE TABLE project_risk_scores (
-    score_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    score_id    INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     run_id      INTEGER NOT NULL REFERENCES assessment_runs(run_id),
     project_id  TEXT NOT NULL REFERENCES projects(project_id),
     risk_score  REAL NOT NULL,                      -- 0–100 (คะแนนสัดส่วน — จัดอันดับละเอียด)
@@ -300,7 +300,7 @@ CREATE TABLE project_risk_scores (
 
 ```sql
 CREATE TABLE annual_risk_results (
-    result_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    result_id     INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     run_id        INTEGER NOT NULL REFERENCES assessment_runs(run_id),
     subdistrict_id INTEGER NOT NULL REFERENCES subdistricts(subdistrict_id),
     fiscal_year   INTEGER NOT NULL,
@@ -341,7 +341,7 @@ CREATE TABLE app_config (
 
 ```sql
 CREATE TABLE assignments (
-    assignment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    assignment_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     project_id    TEXT NOT NULL REFERENCES projects(project_id),
     assigned_to   INTEGER NOT NULL REFERENCES users(user_id),   -- risk_analyst (นักวิเคราะห์)
     assigned_by   INTEGER NOT NULL REFERENCES users(user_id),   -- project_auditor (ผู้ตรวจสอบโครงการ)
@@ -354,8 +354,8 @@ CREATE TABLE assignments (
         'waiting_acceptance','accepted','in_progress','clarification_needed',
         'ready_for_review','under_review','revision_requested','completed'
     )),
-    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at    TEXT NOT NULL DEFAULT (now_text()),
+    updated_at    TEXT NOT NULL DEFAULT (now_text())
 );
 CREATE INDEX idx_assignments_assignee_status ON assignments(assigned_to, status);
 ```
@@ -364,13 +364,13 @@ CREATE INDEX idx_assignments_assignee_status ON assignments(assigned_to, status)
 
 ```sql
 CREATE TABLE assignment_status_history (
-    history_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    history_id    INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     assignment_id INTEGER NOT NULL REFERENCES assignments(assignment_id),
     old_status    TEXT,
     new_status    TEXT NOT NULL,
     changed_by    INTEGER NOT NULL REFERENCES users(user_id),
     note          TEXT,
-    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at    TEXT NOT NULL DEFAULT (now_text())
 );
 ```
 
@@ -378,7 +378,7 @@ CREATE TABLE assignment_status_history (
 
 ```sql
 CREATE TABLE audit_reports (
-    report_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id     INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     assignment_id INTEGER NOT NULL REFERENCES assignments(assignment_id),
     work_process  TEXT,                              -- กระบวนงาน/ภารกิจงาน
     objective     TEXT,                              -- วัตถุประสงค์ของกระบวนงาน
@@ -387,7 +387,7 @@ CREATE TABLE audit_reports (
     impact_score  INTEGER CHECK (impact_score BETWEEN 1 AND 5), -- ระดับคะแนนจากผลกระทบ
     risk_level    INTEGER CHECK (risk_level BETWEEN 1 AND 5),   -- ระดับความเสี่ยงโดยรวม
     findings      TEXT,
-    submitted_at  TEXT DEFAULT (datetime('now'))
+    submitted_at  TEXT DEFAULT (now_text())
 );
 ```
 
@@ -395,7 +395,7 @@ CREATE TABLE audit_reports (
 
 ```sql
 CREATE TABLE auditor_feedback (
-    feedback_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    feedback_id      INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     project_id       TEXT NOT NULL REFERENCES projects(project_id),
     user_id          INTEGER NOT NULL REFERENCES users(user_id),
     feedback_text    TEXT NOT NULL,
@@ -404,8 +404,8 @@ CREATE TABLE auditor_feedback (
     impact_score     INTEGER CHECK (impact_score BETWEEN 1 AND 5),  -- risk_score = likelihood_score × impact_score (คำนวณตอนตอบกลับ ไม่เก็บคอลัมน์แยก)
     suggestions      TEXT,
     status           TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','submitted','resolved')),  -- F5: บันทึกร่าง -> ส่ง -> (project_auditor/admin) ปิดเรื่อง
-    created_at       TEXT DEFAULT (datetime('now')),
-    updated_at       TEXT DEFAULT (datetime('now')),
+    created_at       TEXT DEFAULT (now_text()),
+    updated_at       TEXT DEFAULT (now_text()),
     submitted_at     TEXT,
     resolved_at      TEXT
 );
@@ -420,7 +420,7 @@ CREATE INDEX idx_feedback_project ON auditor_feedback(project_id);
 
 ```sql
 CREATE TABLE access_log (
-    log_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    log_id        INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     username      TEXT,                 -- denormalize: snapshot ณ เวลา action (ไม่ FK เผื่อ user ถูกลบ)
     role          TEXT,                 -- role ณ เวลา action
     action        TEXT NOT NULL,        -- login / view_list / view_detail / export / write / other
@@ -431,7 +431,7 @@ CREATE TABLE access_log (
     status_code   INTEGER,              -- เก็บทั้งสำเร็จ + 403/401 (ตรวจความพยายามเข้าถึงที่ไม่มีสิทธิ์)
     ip            TEXT,
     user_agent    TEXT,
-    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at    TEXT NOT NULL DEFAULT (now_text())
 );
 CREATE INDEX idx_access_log_user_time ON access_log(username, created_at);
 CREATE INDEX idx_access_log_time      ON access_log(created_at);
@@ -710,7 +710,7 @@ WHERE subdistrict_id = :sid AND fiscal_year = :fy
 
 ---
 
-## 12. Permission ที่ App Layer (SQLite ไม่มี row-level security)
+## 12. Permission ที่ App Layer (ไม่ได้เปิด row-level security ของ PostgreSQL ในสคีมานี้)
 
 Role และสิทธิ์นิยามใน `roles.md` (source of truth) — DB เก็บเฉพาะตาราง `roles` (ชื่อ + คำอธิบาย)
 การบังคับสิทธิ์ทำที่ app layer: scope ตำบลผ่าน `scope_subdistrict_ids(...)` และสิทธิ์ราย endpoint
@@ -748,7 +748,7 @@ Role และสิทธิ์นิยามใน `roles.md` (source of trut
 ## 14. สิ่งที่ทีม Application ต้องทำต่อ (execution checklist)
 
 1. รัน DDL ทั้งหมด (§3–§8) — ไฟล์นี้เรียงตามลำดับ dependency แล้ว
-2. เขียน seed script ตาม §9 (Python + sqlite3, ระวัง NUL byte และ date format) รวม seed risk_factors ทั้ง A1–F1 (§5.1) และ Y1–Y3 (§11.3)
+2. เขียน seed script ตาม §9 (Python + psycopg, ระวัง NUL byte และ date format) รวม seed risk_factors ทั้ง A1–F1 (§5.1) และ Y1–Y3 (§11.3)
 3. รัน validation §9.5
 4. Implement risk engine ตาม §5 + §10 (project) และ §11 (annual) — config-driven อ่าน params_json
 5. ตรวจผล Y1/Y2 ของปิงโค้งเทียบ indicator ที่คำนวณไว้แล้วในไฟล์ (§11.5)
