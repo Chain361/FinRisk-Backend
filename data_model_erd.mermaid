@@ -187,3 +187,79 @@ erDiagram
     assignments ||--o{ assignment_status_history : ""
     assignments ||--o{ audit_reports : ""
     users ||--o{ auditor_feedback : ""
+
+    %% --- Legal Linkage + Document Intelligence (docs/legal_linkage_plan.md) ---
+    laws {
+        int law_id PK
+        text law_code "FDA2561|MOF-REG2560|BID2542|RP-ANNOUNCE|FOREST2484|FOREST2507"
+        text law_name_th
+        text law_type "พรบ.|ประกาศ|ระเบียบ|กฎกระทรวง|หลักเกณฑ์"
+        int year_be
+    }
+    law_sections {
+        int section_id PK
+        int law_id FK
+        text section_no "มาตรา 48 / ข้อ 20 / ทั้งฉบับ"
+        text section_summary "สรุปสั้นสำหรับ chatbot"
+        text section_text "ตัวบทเต็มจากไฟล์ case"
+        text section_text "NULL ใน v1"
+    }
+    factor_legal_map {
+        int map_id PK
+        text factor_code FK
+        int section_id FK
+        text reason_text
+    }
+    project_compliance {
+        text project_id PK "FK projects"
+        int in_jurisdiction "0/1/NULL - NULL = computable 0"
+        text note
+    }
+    document_types {
+        text doc_type_code PK "PR4|PR5|PR6"
+        text name_th
+        text required_for_project_type "จ้างก่อสร้าง - ขับ L1"
+        text provides_json "เช่น ราคากลาง, Factor F"
+    }
+    project_documents {
+        int doc_id PK
+        text project_id FK
+        text doc_type_code FK
+        text status "present|missing|pending_review"
+        text summary_text
+        text extracted_json
+        text source "mock|ocr|manual"
+    }
+    document_findings {
+        int finding_id PK
+        int doc_id FK
+        text finding_text
+        text risk_category
+        text observed_value
+        text expected_value
+        text severity
+        text source "mock|ocr|llm|manual - ocr/llm ต้องมี review gate ก่อนใช้จริง"
+    }
+    finding_legal_map {
+        int finding_id PK "FK"
+        int section_id PK "FK"
+        text reason_text
+    }
+    document_chunks {
+        int chunk_id PK
+        int doc_id FK
+        int chunk_no
+        text content_text
+        blob embedding "NULL จนกว่าจะทำ RAG จริง"
+    }
+
+    laws ||--o{ law_sections : ""
+    law_sections ||--o{ factor_legal_map : ""
+    risk_factors ||--o{ factor_legal_map : ""
+    projects ||--o| project_compliance : ""
+    projects ||--o{ project_documents : ""
+    document_types ||--o{ project_documents : ""
+    project_documents ||--o{ document_findings : ""
+    project_documents ||--o{ document_chunks : ""
+    document_findings ||--o{ finding_legal_map : ""
+    law_sections ||--o{ finding_legal_map : ""

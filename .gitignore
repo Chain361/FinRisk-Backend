@@ -10,6 +10,13 @@ venv/
 # หมายเหตุ: ถ้าต้องการ commit fraud_risk.db ให้ลบบรรทัดล่างออก
 fraud_risk.db
 
+# ocr_pipeline — ผลลัพธ์ต่อ run (manifest, review/, out/) สร้างใหม่ได้เสมอ
+ocr_pipeline/work/
+
+# run_pipeline.py — backup อัตโนมัติ + log สรุปผลรัน
+*.bak.*
+pipeline_run.log
+
 # Editor / OS
 .vscode/
 .idea/

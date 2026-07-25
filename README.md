@@ -8,6 +8,63 @@
 
 ---
 
+## 🚀 How to Run for Demo & Pipeline CLI
+
+### ⚙️ 1. Master Pipeline ([run_pipeline.py](run_pipeline.py))
+สำหรับผู้รัน demo หรือประมวลผลข้อมูลตั้งแต่ต้นจนจบ — Pipeline ทั้งหมด (OCR → ตรวจคุณภาพ/Validation → Promote ข้อมูลลง Master CSV → ลงฐานข้อมูล → คำนวณความเสี่ยง) รวมอยู่ในคำสั่งเดียว:
+
+```bash
+pip install -r requirements.txt
+python run_pipeline.py
+```
+
+ถ้าต้องการ OCR สดจาก PDF ให้สร้างไฟล์ `.env` ที่ root ของ repo (ไม่มีก็รันได้ — ระบบจะใช้ OCR cache เดิมอัตโนมัติ):
+```env
+TYPHOON_OCR_API_KEY=<คีย์ของคุณ>   # สมัครฟรีที่ opentyphoon.ai
+```
+
+#### Flag และ Options ของ `run_pipeline.py`:
+* **`python run_pipeline.py`** : รันกระบวนการแบบครบวงจร (Batch OCR → Validate → Promote ลง Master CSV → Seed DB)
+* **`python run_pipeline.py --dry-run`** : ทดลองรัน OCR + Validate เท่านั้น **โดยไม่เขียน/แก้ไข** DB หรือ Master CSV
+* **`python run_pipeline.py --include-needs-review`** : Promote เอกสารที่มีสถานะ `needs_review` ลง DB/CSV ด้วย (หลังผ่านการตรวจสอบใน `ocr_pipeline/work/<run_id>/review/queue.csv` แล้ว)
+* **`python run_pipeline.py --include-fails`** : Promote ข้อมูลทั้งหมดรวมถึงเอกสารที่ไม่ผ่าน Validation (ใช้เพื่อการทดสอบ/Debugging)
+* **`python run_pipeline.py --input-dir <folder>`** : ระบุโฟลเดอร์เก็บไฟล์ PDF + `batch.csv` (default: `raw_financial_statements/`)
+* **`python run_pipeline.py --skip-backup`** : ข้ามการสร้างไฟล์สำรอง (`.bak`) ของ `fraud_risk.db` และ Master CSV
+* **`python run_pipeline.py --enable-rag`** : รัน Law RAG plugin (ปัจจุบันเป็น stub)
+
+> 💡 **ระบบความปลอดภัยข้อมูล (Auto-Backup & Rollback):** `run_pipeline.py` จะสร้างไฟล์สำรองแบบติดประทับเวลา (`.bak.YYYYMMDD_HHMMSS`) ของ DB และ Master CSV ก่อนเริ่มเขียนเสมอ หากขั้นตอนใดล้มเหลว ระบบจะทำ **Auto-Rollback** คืนค่าข้อมูลทันทีเพื่อป้องกันแถวข้อมูลแตกหัก
+
+#### 🛠️ Troubleshooting `run_pipeline.py`
+
+| อาการ | สาเหตุ/ทางแก้ |
+|---|---|
+| ขึ้นว่าไม่มี poppler / pdftoppm | ไม่ต้องแก้ถ้ามี OCR cache (ระบบ fallback ให้เอง) — ถ้าต้อง OCR สดบน Windows: ดาวน์โหลด [poppler-windows](https://github.com/oschwartz10612/poppler-windows/releases) แล้วเพิ่ม `Library\bin` ลง PATH หรือแค่เปิด Docker Desktop ไว้ ระบบจะสลับไปรันใน container ให้ |
+| `circuit breaker: ไม่มีเอกสารใดผ่าน gate` | ทุกไฟล์ fail/needs_review — เปิด `ocr_pipeline/work/<run_id>/review/queue.csv` ตรวจแล้วรันใหม่ด้วย `--include-needs-review` หรือ `--include-fails` |
+| pipeline ล้มกลางทาง | ระบบ rollback `fraud_risk.db` + master CSV ให้อัตโนมัติ — ดูสาเหตุใน `pipeline_run.log` |
+| อยากดูผลรันย้อนหลัง | เปิด `pipeline_run.log` (สรุปทุกครั้งที่รัน) |
+
+---
+
+### 🗄️ 2. Standalone Database Seeding ([seed_database.py](seed_database.py))
+สามารถรัน `seed_database.py` แยกต่างหากได้ตามปกติโดยไม่ต้องรัน `run_pipeline.py` (ใช้กรณีที่มีไฟล์ Master CSV ใน `standardized_data/` เรียบร้อยแล้ว และต้องการสร้าง/Re-build SQLite DB + รัน Risk Engine เท่านั้น)
+
+```bash
+# สร้าง/Re-seed ฐานข้อมูลใหม่จาก Master CSV (ลบ DB เก่าและสร้างใหม่)
+python seed_database.py --force
+
+# สร้างฐานข้อมูลลงในไฟล์ DB ชื่ออื่น
+python seed_database.py --db my_custom_risk.db
+```
+
+#### Flag และ Options ของ `seed_database.py`:
+* **`python seed_database.py`** : อ่านไฟล์ Master CSV จาก `standardized_data/` เพื่อสร้าง schema, seed ข้อมูล, รัน risk engine และทำการ validation
+* **`python seed_database.py --force`** : ลบไฟล์ `fraud_risk.db` เดิมก่อนสร้างใหม่ (หากมี DB เดิมอยู่แล้วและไม่ใส่ `--force` สคริปต์จะแจ้งเตือนและหยุดทำงาน)
+* **`python seed_database.py --db <path>`** : ระบุ path/filename ของไฟล์ SQLite DB ปลายทาง (default: `fraud_risk.db`)
+
+> 📌 `seed_database.py` ใช้ **Python Standard Library ล้วน** (ไม่ต้อง `pip install` packages เพิ่มเติม)
+
+---
+
 ## 1. อ่านอะไรก่อน (5 นาทีแรก)
 
 | อยากรู้เรื่อง | เปิดไฟล์ |
@@ -35,7 +92,7 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
 # 3) สร้างฐานข้อมูล + seed ข้อมูล + รัน risk engine ครั้งแรก
-python seed_database.py            # ได้ไฟล์ fraud_risk.db
+python seed_database.py --force    # ได้ไฟล์ fraud_risk.db
 
 # 4) รัน API
 uvicorn src.main:app --reload
@@ -43,8 +100,6 @@ uvicorn src.main:app --reload
 
 เปิดเอกสาร API อัตโนมัติที่ **http://127.0.0.1:8000/docs**
 ตรวจสุขภาพระบบที่ **http://127.0.0.1:8000/health**
-
-> `seed_database.py` ใช้ **Python stdlib ล้วน** (ไม่ต้อง `pip install`) — ตัว API เท่านั้นที่ต้องใช้ `requirements.txt`
 
 ---
 
@@ -58,13 +113,23 @@ data_modelling/
 │  ├─ database.py               # ตัวช่วยต่อ SQLite (dependency get_db)
 │  ├─ auth.py                   # mock login + role/scope guard
 │  ├─ schemas.py                # Pydantic models
+│  ├─ services/                 # service function (contract ที่ router + chatbot ใช้ร่วมกัน)
+│  │  ├─ common.py              # scope guard + latest_run_id + domain error
+│  │  ├─ legal.py               # ชั้นกฎหมาย (laws/sections/factor_legal_map)
+│  │  └─ documents.py           # ชั้นเอกสาร (doc types/status/missing/findings)
 │  └─ routers/                  # endpoint แยกตามโดเมน
 │     ├─ auth.py                # /auth/login, /auth/me
 │     ├─ subdistricts.py        # /subdistricts
 │     ├─ projects.py            # /projects (+ risk score ล่าสุด)
 │     ├─ risk.py                # /risk/factors, /risk/annual, /risk/summary
-│     └─ audit.py               # /audit/assignments, /audit/feedback
-├─ tests/test_smoke.py          # smoke test (pytest)
+│     ├─ audit.py               # /audit/assignments, /audit/feedback
+│     ├─ legal.py               # /legal/laws, /risk/projects/{id}/legal
+│     └─ documents.py           # /documents/types, /projects/{id}/documents
+├─ tests/
+│  ├─ test_smoke.py             # smoke test (pytest)
+│  └─ test_legal_documents.py   # เทสต์ชั้นกฎหมาย + ชั้นเอกสาร
+├─ legal_refs/                  # CSV กฎหมายที่ curate แล้ว (laws, law_sections, factor_legal_map)
+├─ mock_documents/              # CSV ชั้นเอกสาร mock (doc types, documents, findings, finding map)
 ├─ seed_database.py             # สร้าง DB + seed + รัน risk engine + validate
 ├─ fraud_risk.db                # SQLite (สร้างจาก seed — ไม่ commit ตาม .gitignore)
 ├─ standardized_data/           # CSV กลางที่ seed อ่านเข้า
@@ -94,7 +159,11 @@ data_modelling/
 
 ดู ERD เต็มได้ที่ `data_model_erd.mermaid` และคำอธิบายทุกตาราง/คอลัมน์ที่ `data_model_design.md`
 
-### Risk factors (8 ตัว)
+**Legal linkage + document layer** (ดู `docs/legal_linkage_plan.md`) — `laws`, `law_sections`,
+`factor_legal_map`, `project_compliance`, `document_types`, `project_documents`,
+`document_findings`, `finding_legal_map`, `document_chunks`
+
+### Risk factors (11 ตัว)
 
 | Code | ระดับ | ชื่อ |
 |---|---|---|
@@ -103,6 +172,9 @@ data_modelling/
 | A3 | project | ราคากลางชนงบพอดี |
 | D1 | project | วงเงินหวุดหวิดใต้เกณฑ์เฉพาะเจาะจง |
 | F1 | project | จัดจ้างกระจุกตัวท้ายปีงบ |
+| L1 | project | ขาดเอกสารราคากลาง (ปร.4/ปร.5/ปร.6) — เฉพาะ `จ้างก่อสร้าง` |
+| L2 | project | พื้นที่ดำเนินการนอกกรอบอำนาจหน้าที่ — เฉพาะ `จ้างก่อสร้าง` |
+| L3 | project | เนื้อหาเอกสารราคากลางมีพิรุธ — เฉพาะ `จ้างก่อสร้าง` |
 | Y1 | annual | อัตราการพึ่งพาตนเองทางการคลัง |
 | Y2 | annual | ดุลการดำเนินงานประจำปี |
 | Y3 | annual | Cash Coverage Ratio |
@@ -144,7 +216,17 @@ curl -X POST http://127.0.0.1:8000/auth/login \
 curl http://127.0.0.1:8000/projects?risk_level=high -H "X-Username: admin"
 curl http://127.0.0.1:8000/risk/summary            -H "X-Username: thachang_user"
 curl http://127.0.0.1:8000/subdistricts            -H "X-Username: public1"   # ประชาชน: เห็นทุกตำบล
+
+# ชั้นกฎหมาย + ชั้นเอกสาร (legal linkage) — โครงการเดโม MOCK-CON-001/002 อยู่ตำบลโยนก
+curl http://127.0.0.1:8000/legal/laws                              -H "X-Username: admin"
+curl http://127.0.0.1:8000/risk/projects/MOCK-CON-002/legal        -H "X-Username: admin"
+curl "http://127.0.0.1:8000/risk/projects/MOCK-CON-002/legal?only_triggered=true" -H "X-Username: admin"
+curl http://127.0.0.1:8000/projects/MOCK-CON-001/documents         -H "X-Username: admin"
 ```
+
+`/risk/projects/{id}/legal` คืน risk factor ล่าสุดของโครงการพร้อม `computable`,
+`action_suggestion` และ `legal_refs` — ถ้า factor นั้น `triggered=1` แต่ยังไม่ได้ curate มาตรา
+จะได้ `legal_refs: []` + `legal_ref_note` เป็นข้อความตายตัวจาก backend (ห้าม LLM แต่งมาตราเอง)
 
 > ⚠️ **Auth เป็น mock** (token = username, sha256 ไม่มี salt) เหมาะกับ demo เท่านั้น
 > ก่อนขึ้น production ต้องเปลี่ยนเป็น bcrypt/argon2 + JWT — ดู `CLAUDE.md`
@@ -154,8 +236,37 @@ curl http://127.0.0.1:8000/subdistricts            -H "X-Username: public1"   # 
 ## 7. เทสต์
 
 ```bash
-pytest -q                # รัน smoke test (ต้องมี fraud_risk.db แล้ว)
+pytest -q                       # ทั้ง tests/ และ ocr_pipeline/tests/ (ต้องมี fraud_risk.db แล้ว)
+pytest tests/ -q                # เฉพาะ API (smoke + ชั้นกฎหมาย/เอกสาร)
+pytest ocr_pipeline/tests -q    # เฉพาะ OCR pipeline
 ```
+
+`pytest.ini` กำหนด `testpaths` ไว้แล้ว และกัน `ocr_pipeline/work/` (ผลลัพธ์ต่อ run, gitignored)
+ไม่ให้ถูก collect
+
+### OCR fixture สำหรับ integration test
+
+`ocr_pipeline/tests/test_ocr_pipeline_integration.py` ต้องใช้ OCR markdown ของงบ **ท่าช้าง 2567**
+2 ชุด ซึ่ง **ไม่ได้ commit เข้า repo** (เป็นผลลัพธ์ที่สร้างใหม่ได้ และผูกกับ OCR engine):
+
+| path | คืออะไร |
+|---|---|
+| `pipeline/ocr_output/thachang67` | OCR ชุดเต็ม 33 หน้าจาก `raw_financial_statements/ท่าช้าง67.pdf` |
+| `pipeline/ocr_output/thachang67_standin` | ชุด "stand-in" — เฉพาะหน้างบแสดงฐานะการเงิน/งบแสดงผลการดำเนินงาน ที่ตรวจแก้จนตรงกับ master CSV แล้ว (ใช้เป็นฐานเทียบ cross-run) |
+
+**ถ้าไม่พบทั้งสองโฟลเดอร์ เทสต์กลุ่มนี้จะถูก `skip` ไม่ใช่ fail** — `pytest -q` ที่ clone ใหม่จึงผ่านเสมอ
+
+สร้างชุดเต็มใหม่ได้ด้วย (ต้องมี env `TYPHOON_OCR_API_KEY` เพราะเป็นการเรียก OCR จริง):
+
+```bash
+python -m ocr_pipeline.run --pdf raw_financial_statements/ท่าช้าง67.pdf \
+  --subdistrict ท่าช้าง --municipality เทศบาลตำบลท่าช้าง --year 2567 \
+  --source ท่าช้าง67.pdf --run-id t67
+cp -r ocr_pipeline/work/t67/ocr pipeline/ocr_output/thachang67
+```
+
+ส่วนชุด `thachang67_standin` ต้องตรวจแก้ด้วยคนต่อจากชุดเต็ม (คัดเฉพาะ 2 หน้างบหลัก แล้วแก้ตัวเลข
+ที่ OCR อ่านพลาดให้ตรง `standardized_data/financial_report_ALL_master.csv`) — เก็บไว้นอก repo
 
 ---
 
@@ -173,7 +284,10 @@ pytest -q                # รัน smoke test (ต้องมี fraud_risk.d
 
 ## 9. งานที่ยังต้องทำต่อ (สำหรับ dev ใหม่)
 
-- เติม business logic ของ `/audit/*` (สร้าง assignment, ส่ง audit_report) — ตอนนี้เป็นโครง read-only
 - เปลี่ยน mock auth เป็น JWT + password hashing จริง
+- `/audit/feedback`: filter สถานะ `draft` ให้เห็นเฉพาะเจ้าของ และเพิ่ม scope guard ให้
+  `GET /audit/feedback/{project_id}` (ตอนนี้ยังไม่กรองตำบล)
 - เพิ่ม endpoint สำหรับ "รัน risk engine ใหม่" (ตอนนี้รันผ่าน `seed_database.py` เท่านั้น)
-- ส่วน "Document Intelligence" (อ่านเอกสาร/OCR) ตามชื่อ Mission ยังไม่ได้เริ่ม
+- ต่อ OCR จริงเข้าชั้นเอกสาร (ตอนนี้ `project_documents`/`document_findings` เป็น `source='mock'`
+  ทั้งหมด) — ก่อนให้ finding จาก OCR/LLM ขยับ risk score ต้องเพิ่ม review gate ให้คนยืนยันก่อน
+- curate mapping กฎหมายของ A2/A3 (ตอนนี้ยังไม่มี → chatbot ตอบ "ยังไม่มีการเชื่อมโยงข้อกฎหมาย")

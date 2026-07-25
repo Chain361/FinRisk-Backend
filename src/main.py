@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .audit_log import record_access, should_log
 from .config import API_TITLE, API_VERSION, CORS_ORIGINS, DB_PATH
 from .database import _connect
-from .routers import audit, auth, financials, projects, risk, subdistricts
+from .routers import audit, auth, documents, financials, legal, projects, risk, subdistricts
 
 app = FastAPI(title=API_TITLE, version=API_VERSION)
 
@@ -54,6 +54,11 @@ app.include_router(projects.router)
 app.include_router(risk.router)
 app.include_router(audit.router)
 app.include_router(financials.router)
+# ชั้นกฎหมาย + ชั้นเอกสาร (legal linkage) — endpoint เดิมไม่ถูกแตะ
+app.include_router(legal.router)
+app.include_router(legal.project_router)
+app.include_router(documents.router)
+app.include_router(documents.project_router)
 
 
 @app.get("/health", tags=["meta"])

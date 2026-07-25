@@ -1,0 +1,7 @@
+# deps ของ ocr_pipeline (spec §1) — ชุดนี้ติดตั้งแยกจาก API ได้ (deploy OCR อย่างเดียว)
+# ตั้งใจซ้ำกับ root requirements.txt — แก้เวอร์ชันเมื่อไรต้องแก้ทั้งสองไฟล์ให้ตรงกัน
+pdfplumber>=0.11
+rapidfuzz>=3.0
+
+# โหมด production (--pdf --extractor typhoon) ติดตั้งเพิ่ม:
+#   typhoon-ocr pypdf   (+ poppler-utils ในระบบ)

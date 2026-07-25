@@ -443,11 +443,23 @@ CREATE INDEX idx_access_log_time      ON access_log(created_at);
 
 ---
 
-## 7. โมดูล Document Intelligence + Chatbot + Legal Linkage — **ตัดออกจาก scope รอบนี้**
+## 7. โมดูล Legal Linkage + Document Intelligence — **implement แล้ว (2026-07-25)**
 
-ตัดสินใจ (ก.ค. 2569): ยังไม่ทำในรอบนี้ ได้แก่ ตารางเอกสาร/document chunks (RAG), checklist เอกสารประกอบ, ตารางกฎหมาย/ระเบียบ + การเชื่อม factor↔กฎหมาย, และตาราง chat ทั้งหมด
+สเปกเต็มอยู่ที่ `docs/legal_linkage_plan.md` — สรุปสิ่งที่เพิ่ม (additive ล้วน ตารางเดิม/endpoint เดิมไม่ถูกแตะ):
 
-การออกแบบปัจจุบัน **ไม่ปิดทาง** การเพิ่มภายหลัง: ตารางกลุ่มนี้เป็น additive ล้วน (มีแต่ FK ชี้เข้าหา `projects`/`risk_factors`/`users` ที่มีอยู่แล้ว) → เพิ่มได้โดยไม่แตะ schema เดิม เมื่อถึง phase นั้นให้ยึดหลัก: chatbot ต้องเก็บ reference ต่อคำตอบ, เอกสารต้องแยก source primary/external ตามข้อบังคับ Mission §6.1
+**ตารางใหม่ 9 ตาราง** (seed จาก `legal_refs/` + `mock_documents/`):
+
+- ชั้นกฎหมาย: `laws` (6 ฉบับ), `law_sections` (9 มาตรา/ข้อ — `section_summary` เป็นสรุปเพื่อเดโม ⚠️ ให้ฝ่ายกฎหมายตรวจทานก่อน production), `factor_legal_map` (factor ↔ มาตรา many-to-many)
+- ชั้น compliance: `project_compliance` (`in_jurisdiction` สำหรับ L2)
+- ชั้นเอกสาร: `document_types` (ปร.4/5/6 + `provides_json` + `required_for_project_type`), `project_documents` (checklist/สถานะรายโครงการ — mock ตอนนี้ OCR ภายหลังด้วย schema เดิม), `document_findings` (ข้อสังเกตในเอกสาร — v1 mock เท่านั้น เมื่อใช้ OCR/LLM จริงต้องเพิ่ม review gate), `finding_legal_map`, `document_chunks` (เผื่อ RAG — embedding NULL)
+
+**คอลัมน์ใหม่ใน `risk_factors`**: `applies_to_project_type` (gate — L1–L3 = 'จ้างก่อสร้าง', NULL = ทุกประเภท), `action_suggestion`
+
+**Factor ใหม่ L1–L3** (weight=1 เท่ากัน): L1 ขาดเอกสารราคากลาง (derive จาก `project_documents`), L2 พื้นที่นอกกรอบอำนาจหน้าที่, L3 เนื้อหาเอกสารมีพิรุธ (นับ `document_findings`) — โครงการจริงไม่มีข้อมูล compliance/เอกสาร → `computable=0` ทุกแถว **risk score เดิมไม่เพี้ยน** (regression ยืนยันแล้ว: score/level/triggered ของโครงการจริง 96 เท่าเดิมทุกแถว, n_nc ก่อสร้างจริง 60 โครงการ +3)
+
+**Mock 2 โครงการ** (ตำบลโยนก, `project_id` ขึ้นต้น `MOCK-`, dept `กองช่าง (เดโม)`): MOCK-CON-001 trigger A1+L3 (เอกสารครบแต่มี findings 3 จุด), MOCK-CON-002 trigger D1+L1+L2 (ขาด ปร.4/5/6 + ป่าสงวน) — engine exclude `MOCK-%` จากการนับกลุ่ม A3
+
+ยังไม่ทำ: ตาราง chat, OCR จริง, review gate ของ findings, router `legal.py`/`documents.py` (ชั้น service/API — ดู plan §5)
 
 ---
 

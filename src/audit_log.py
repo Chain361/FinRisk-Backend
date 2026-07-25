@@ -27,6 +27,8 @@ _RESOURCE_MAP = {
     "financials": "financial",
     "audit": "audit",
     "auth": "auth",
+    "legal": "legal",
+    "documents": "document",
 }
 
 
@@ -44,6 +46,11 @@ def derive_action_resource(method: str, path: str) -> tuple[str, str | None, str
     segments = [s for s in path.split("/") if s]
     resource_type = _RESOURCE_MAP.get(segments[0]) if segments else None
     resource_id = segments[1] if len(segments) >= 2 else None
+
+    # path ที่ซ้อน id ไว้ชั้นที่ 3 เช่น /risk/projects/{project_id}/legal
+    # → บันทึกเป็น resource project + project_id (ไม่ใช่คำว่า 'projects')
+    if len(segments) >= 3 and segments[0] == "risk" and segments[1] == "projects":
+        resource_type, resource_id = "project", segments[2]
 
     if path.endswith("/auth/login"):
         action = "login"

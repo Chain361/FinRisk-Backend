@@ -1,0 +1,3 @@
+fuzzy: {threshold: 92, margin: 3}
+gate:  {max_fuzzy_pct: 10, max_unmatched: 0, money_tol: 0.01}
+paths: {reference: ocr_pipeline/reference, work: ocr_pipeline/work}
