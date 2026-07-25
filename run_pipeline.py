@@ -125,6 +125,8 @@ def run_in_docker(argv) -> int:
 def make_backups(skip: bool):
     if skip:
         log("[backup] ข้าม backup ตาม --skip-backup")
+        log("[backup] ⚠️  ไม่มี backup → ถ้า pipeline ล้มกลางทาง จะ rollback DB/Master CSV ไม่ได้ "
+            "ต้องสร้างใหม่ด้วย `python seed_database.py --force` เอง")
         return {}
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     backups = {}
@@ -234,8 +236,12 @@ def main() -> int:
             flush_log()
             return 0
         log(f"[error] {e}")
-        rollback(backups)
-        log("[error] pipeline ล้มเหลว — คืนค่า DB/CSV เรียบร้อย ดูรายละเอียดใน pipeline_run.log")
+        if backups:
+            rollback(backups)
+            log("[error] pipeline ล้มเหลว — คืนค่า DB/CSV เรียบร้อย ดูรายละเอียดใน pipeline_run.log")
+        else:
+            log("[error] pipeline ล้มเหลว และไม่มี backup ให้คืนค่า (--dry-run หรือ --skip-backup) — "
+                "ตรวจสภาพ DB/Master CSV เองด้วย ดูรายละเอียดใน pipeline_run.log")
         flush_log()
         return 1
 

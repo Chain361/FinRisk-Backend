@@ -2,7 +2,7 @@
 
 > สถานะ: **design only** — ยังไม่แตะโค้ด v1 (`pipeline/`)
 > Input ที่ใช้ออกแบบ: `ท่าช้าง67.pdf` (สแกน 33 หน้า ไม่มี text layer),
-> `ผังบัญชี.pdf` = ผังบัญชีมาตรฐาน e-LAAS (61 หน้า **มี text layer**, 1,018 รหัสบัญชี)
+> `docs/reference/ผังบัญชี.pdf` = ผังบัญชีมาตรฐาน e-LAAS (61 หน้า **มี text layer**, 1,018 รหัสบัญชี)
 > อ่านคู่กับ: `pipeline/README.md` (v1), `data_model_design.md` §4.2/§9.4, `docs/ARCHITECTURE.md`
 > สำหรับลงมือ implement: ใช้ `docs/ocr_pipeline_implementation_spec.md` (normative spec สำหรับ agent)
 

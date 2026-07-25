@@ -10,7 +10,7 @@
 
 ## 🚀 How to Run for Demo & Pipeline CLI
 
-### ⚙️ 1. Master Pipeline ([run_pipeline.py](file:///c:/Users/Windows%2010/Desktop/data_modelling/run_pipeline.py))
+### ⚙️ 1. Master Pipeline ([run_pipeline.py](run_pipeline.py))
 สำหรับผู้รัน demo หรือประมวลผลข้อมูลตั้งแต่ต้นจนจบ — Pipeline ทั้งหมด (OCR → ตรวจคุณภาพ/Validation → Promote ข้อมูลลง Master CSV → ลงฐานข้อมูล → คำนวณความเสี่ยง) รวมอยู่ในคำสั่งเดียว:
 
 ```bash
@@ -45,7 +45,7 @@ TYPHOON_OCR_API_KEY=<คีย์ของคุณ>   # สมัครฟร�
 
 ---
 
-### 🗄️ 2. Standalone Database Seeding ([seed_database.py](file:///c:/Users/Windows%2010/Desktop/data_modelling/seed_database.py))
+### 🗄️ 2. Standalone Database Seeding ([seed_database.py](seed_database.py))
 สามารถรัน `seed_database.py` แยกต่างหากได้ตามปกติโดยไม่ต้องรัน `run_pipeline.py` (ใช้กรณีที่มีไฟล์ Master CSV ใน `standardized_data/` เรียบร้อยแล้ว และต้องการสร้าง/Re-build SQLite DB + รัน Risk Engine เท่านั้น)
 
 ```bash
@@ -236,8 +236,37 @@ curl http://127.0.0.1:8000/projects/MOCK-CON-001/documents         -H "X-Usernam
 ## 7. เทสต์
 
 ```bash
-pytest -q                # รัน smoke test (ต้องมี fraud_risk.db แล้ว)
+pytest -q                       # ทั้ง tests/ และ ocr_pipeline/tests/ (ต้องมี fraud_risk.db แล้ว)
+pytest tests/ -q                # เฉพาะ API (smoke + ชั้นกฎหมาย/เอกสาร)
+pytest ocr_pipeline/tests -q    # เฉพาะ OCR pipeline
 ```
+
+`pytest.ini` กำหนด `testpaths` ไว้แล้ว และกัน `ocr_pipeline/work/` (ผลลัพธ์ต่อ run, gitignored)
+ไม่ให้ถูก collect
+
+### OCR fixture สำหรับ integration test
+
+`ocr_pipeline/tests/test_ocr_pipeline_integration.py` ต้องใช้ OCR markdown ของงบ **ท่าช้าง 2567**
+2 ชุด ซึ่ง **ไม่ได้ commit เข้า repo** (เป็นผลลัพธ์ที่สร้างใหม่ได้ และผูกกับ OCR engine):
+
+| path | คืออะไร |
+|---|---|
+| `pipeline/ocr_output/thachang67` | OCR ชุดเต็ม 33 หน้าจาก `raw_financial_statements/ท่าช้าง67.pdf` |
+| `pipeline/ocr_output/thachang67_standin` | ชุด "stand-in" — เฉพาะหน้างบแสดงฐานะการเงิน/งบแสดงผลการดำเนินงาน ที่ตรวจแก้จนตรงกับ master CSV แล้ว (ใช้เป็นฐานเทียบ cross-run) |
+
+**ถ้าไม่พบทั้งสองโฟลเดอร์ เทสต์กลุ่มนี้จะถูก `skip` ไม่ใช่ fail** — `pytest -q` ที่ clone ใหม่จึงผ่านเสมอ
+
+สร้างชุดเต็มใหม่ได้ด้วย (ต้องมี env `TYPHOON_OCR_API_KEY` เพราะเป็นการเรียก OCR จริง):
+
+```bash
+python -m ocr_pipeline.run --pdf raw_financial_statements/ท่าช้าง67.pdf \
+  --subdistrict ท่าช้าง --municipality เทศบาลตำบลท่าช้าง --year 2567 \
+  --source ท่าช้าง67.pdf --run-id t67
+cp -r ocr_pipeline/work/t67/ocr pipeline/ocr_output/thachang67
+```
+
+ส่วนชุด `thachang67_standin` ต้องตรวจแก้ด้วยคนต่อจากชุดเต็ม (คัดเฉพาะ 2 หน้างบหลัก แล้วแก้ตัวเลข
+ที่ OCR อ่านพลาดให้ตรง `standardized_data/financial_report_ALL_master.csv`) — เก็บไว้นอก repo
 
 ---
 
@@ -255,8 +284,9 @@ pytest -q                # รัน smoke test (ต้องมี fraud_risk.d
 
 ## 9. งานที่ยังต้องทำต่อ (สำหรับ dev ใหม่)
 
-- เติม business logic ของ `/audit/*` (สร้าง assignment, ส่ง audit_report) — ตอนนี้เป็นโครง read-only
 - เปลี่ยน mock auth เป็น JWT + password hashing จริง
+- `/audit/feedback`: filter สถานะ `draft` ให้เห็นเฉพาะเจ้าของ และเพิ่ม scope guard ให้
+  `GET /audit/feedback/{project_id}` (ตอนนี้ยังไม่กรองตำบล)
 - เพิ่ม endpoint สำหรับ "รัน risk engine ใหม่" (ตอนนี้รันผ่าน `seed_database.py` เท่านั้น)
 - ต่อ OCR จริงเข้าชั้นเอกสาร (ตอนนี้ `project_documents`/`document_findings` เป็น `source='mock'`
   ทั้งหมด) — ก่อนให้ finding จาก OCR/LLM ขยับ risk score ต้องเพิ่ม review gate ให้คนยืนยันก่อน

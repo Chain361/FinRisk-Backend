@@ -893,6 +893,12 @@ def seed_legal_layer(cur, sub_id):
         f"{cur.execute('SELECT COUNT(*) FROM factor_legal_map').fetchone()[0]} แถว")
 
     # 2) mock 2 โครงการก่อสร้าง (ตำบลโยนก) + project_compliance
+    # MOCK_PROJECTS อ้างชื่อตำบลแบบ hardcode — ถ้าข้อมูลตำบลเปลี่ยนชื่อ ให้ล้มพร้อมบอกสาเหตุ
+    # แทนที่จะ KeyError เปล่า ๆ
+    missing_subs = sorted({mp["sub"] for mp in MOCK_PROJECTS} - set(sub_id))
+    if missing_subs:
+        sys.exit(f"[error] MOCK_PROJECTS อ้างตำบล {missing_subs} ที่ไม่มีในตาราง subdistricts "
+                 f"(มีอยู่: {sorted(sub_id)}) — แก้ชื่อใน MOCK_PROJECTS ให้ตรงกับข้อมูลตำบล")
     for mp in MOCK_PROJECTS:
         ratio = round(mp["contract"] / mp["ref"], 4)
         cur.execute("""INSERT INTO projects (project_id, subdistrict_id, budget_year, project_name,

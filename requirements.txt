@@ -8,6 +8,8 @@ httpx==0.27.*        # ใช้โดย fastapi.testclient
 pytest==8.*
 
 # Data extraction / ocr_pipeline
+# ตั้งใจซ้ำกับ ocr_pipeline/requirements.txt — ที่นั่นเป็นชุดของ pipeline ที่ติดตั้งแยกได้
+# (deploy OCR โดยไม่ต้องลง FastAPI) ถ้าแก้เวอร์ชันต้องแก้ทั้งสองไฟล์ให้ตรงกัน
 pdfplumber>=0.11
 rapidfuzz>=3.0
 

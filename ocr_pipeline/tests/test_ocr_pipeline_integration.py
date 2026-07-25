@@ -14,6 +14,17 @@ import pytest
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 GOLD = "standardized_data/financial_report_ALL_master.csv"
 
+# fixture OCR ของ ท่าช้าง 2567 — ไม่ได้ commit เข้า repo (สร้างใหม่ได้จาก PDF ต้นฉบับ ดู README
+# หัวข้อ "OCR fixture สำหรับ integration test") เทสต์ทั้งกลุ่มนี้จะ skip เมื่อไม่พบโฟลเดอร์
+OCR_STANDIN = "pipeline/ocr_output/thachang67_standin"
+OCR_FULL = "pipeline/ocr_output/thachang67"
+
+requires_ocr_fixture = pytest.mark.skipif(
+    not (os.path.isdir(os.path.join(REPO_ROOT, OCR_STANDIN))
+         and os.path.isdir(os.path.join(REPO_ROOT, OCR_FULL))),
+    reason=f"ไม่พบ OCR fixture ({OCR_STANDIN}, {OCR_FULL}) — ดูวิธีสร้างใน README",
+)
+
 
 def _run(args, **kw):
     env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
@@ -35,9 +46,9 @@ def workspace(tmp_path_factory):
         encoding="utf-8")
     common = ["--subdistrict", "ท่าช้าง", "--municipality", "เทศบาลตำบลท่าช้าง",
               "--year", "2567", "--source", "ท่าช้าง67.pdf", "--config", str(cfg)]
-    r1 = _run(["ocr_pipeline.run", "--from-ocr", "pipeline/ocr_output/thachang67_standin",
+    r1 = _run(["ocr_pipeline.run", "--from-ocr", OCR_STANDIN,
                *common, "--run-id", "t67_standin"])
-    r2 = _run(["ocr_pipeline.run", "--from-ocr", "pipeline/ocr_output/thachang67",
+    r2 = _run(["ocr_pipeline.run", "--from-ocr", OCR_FULL,
                *common, "--run-id", "t67_full"])
     return {"work": work, "cfg": cfg, "standin": r1, "full": r2}
 
@@ -57,6 +68,7 @@ def test_coverage_gold_72_of_72():
 
 # ---------------------------------------------------------------- S3 standin: 100% ทุกตัว
 
+@requires_ocr_fixture
 def test_standin_run_passes(workspace):
     assert workspace["standin"].returncode == 0, workspace["standin"].stdout
     report = json.load(open(workspace["work"] / "t67_standin" / "run_report.json", encoding="utf-8"))
@@ -66,6 +78,7 @@ def test_standin_run_passes(workspace):
     assert all(c["result"] == "pass" for c in report["validation"])
 
 
+@requires_ocr_fixture
 def test_standin_evaluate_100(workspace):
     from ocr_pipeline.eval.evaluate import run
     os.chdir(REPO_ROOT)
@@ -77,6 +90,7 @@ def test_standin_evaluate_100(workspace):
 
 # ---------------------------------------------------------------- S3 ชุดเต็ม 33 หน้า: ชนะ v1 ด้วย gate
 
+@requires_ocr_fixture
 def test_full_run_beats_v1_baseline(workspace):
     """baseline v1: 51 แถว, recall 97.7%, precision 82.4%, มูลค่า 97.6%
     v2: precision = 100%, recall ≥ 97.7%, มูลค่า = 100% บนแถวที่ emit (spec S3)"""
@@ -102,12 +116,14 @@ def test_full_run_beats_v1_baseline(workspace):
 
 # ---------------------------------------------------------------- S4 validate gate
 
+@requires_ocr_fixture
 def test_validate_pass_on_standin(workspace):
     r = _run(["ocr_pipeline.validate", str(workspace["work"] / "t67_standin" / "out.csv"),
               "--config", str(workspace["cfg"])])
     assert r.returncode == 0, r.stdout
 
 
+@requires_ocr_fixture
 def test_validate_fail_on_tampered_digit(workspace, tmp_path):
     rows = list(csv.DictReader(open(workspace["work"] / "t67_standin" / "out.csv",
                                     encoding="utf-8-sig")))
@@ -125,6 +141,7 @@ def test_validate_fail_on_tampered_digit(workspace, tmp_path):
     assert r.returncode == 1, r.stdout                         # สมการครบแต่ไม่ลงตัว → fail
 
 
+@requires_ocr_fixture
 def test_validate_needs_review_on_summary_doc(workspace, tmp_path):
     rows = list(csv.DictReader(open(workspace["work"] / "t67_standin" / "out.csv",
                                     encoding="utf-8-sig")))
@@ -141,6 +158,7 @@ def test_validate_needs_review_on_summary_doc(workspace, tmp_path):
 
 # ---------------------------------------------------------------- batch runner
 
+@requires_ocr_fixture
 def test_batch_merges_only_gated_runs(tmp_path):
     """โฟลเดอร์รวมหลายเอกสาร + batch.csv → รวมเฉพาะ run ที่ pass เป็น CSV เดียว
     (สอง run ของ (ตำบล, ปี) เดียวกัน: ชุดเต็มโดน cross-run quarantine → needs_review → ไม่รวม)"""
@@ -148,8 +166,8 @@ def test_batch_merges_only_gated_runs(tmp_path):
     folder.mkdir()
     (folder / "batch.csv").write_text(
         "pdf,ตำบล,เทศบาล,ปีงบประมาณ,run_id,ocr_dir\n"
-        ",ท่าช้าง,เทศบาลตำบลท่าช้าง,2567,b_standin,pipeline/ocr_output/thachang67_standin\n"
-        ",ท่าช้าง,เทศบาลตำบลท่าช้าง,2567,b_full,pipeline/ocr_output/thachang67\n",
+        f",ท่าช้าง,เทศบาลตำบลท่าช้าง,2567,b_standin,{OCR_STANDIN}\n"
+        f",ท่าช้าง,เทศบาลตำบลท่าช้าง,2567,b_full,{OCR_FULL}\n",
         encoding="utf-8-sig")
     cfg = tmp_path / "config.yaml"
     cfg.write_text(
@@ -171,6 +189,7 @@ def test_batch_merges_only_gated_runs(tmp_path):
 
 # ---------------------------------------------------------------- S5 downstream (L2)
 
+@requires_ocr_fixture
 def test_downstream_five_values_on_standin(workspace):
     from ocr_pipeline.eval.eval_downstream import run
     os.chdir(REPO_ROOT)
