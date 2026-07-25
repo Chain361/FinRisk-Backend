@@ -32,11 +32,16 @@ pytest -q                              # smoke test
   เพื่อให้ query เดิมทั่ว repo ใช้ต่อได้โดยไม่ต้องแก้ทีละจุด; helper `rows_to_dicts()`
 - `src/auth.py` — JWT login (bcrypt + PyJWT) + `get_current_user`, `require_roles(...)`, `scope_subdistrict_ids(...)`
 - `src/schemas.py` — Pydantic model (request/response)
-- `src/routers/*.py` — endpoint แยกตามโดเมน (auth, subdistricts, projects, risk, audit)
+- `src/routers/*.py` — endpoint แยกตามโดเมน (auth, subdistricts, projects, risk, audit, admin)
 
 **Data flow:** CSV (`standardized_data/`) → `seed_database.py` เขียนลง PostgreSQL (ตาม `DATABASE_URL`)
 → risk engine ใน seed คำนวณและเขียนตาราง `*_risk_results` / `project_risk_scores`
-→ FastAPI **อ่านอย่างเดียว** จาก DB (ยังไม่มี endpoint ที่รัน engine)
+→ FastAPI ส่วนใหญ่ **อ่านอย่างเดียว** จาก DB ยกเว้น `src/routers/admin.py`
+(`POST /admin/data/upload` นำเข้า CSV โครงการ/งบการเงินของตำบลที่มีอยู่แล้ว,
+`POST /admin/risk-engine/run` สั่งคำนวณ risk score ใหม่) — ทั้งสอง endpoint เรียก
+`seed_vendors`/`seed_projects`/`seed_financial`/`run_project_engine`/`run_annual_engine`
+จาก `seed_database.py` ตรงๆ (import เป็น top-level module จาก repo root) **ห้ามก็อปโค้ด
+มาเขียนซ้ำใน router** เพราะ logic ต้องอยู่ที่เดียวตามกติกาด้านล่าง
 
 **เขียน SQL ใหม่:** ใช้ `?` placeholder แบบเดิมได้เลย (แปลงเป็น `%s` อัตโนมัติที่ `src/database.py`)
 แต่ต้องรู้ 3 จุดต่างจาก SQLite เดิม: (1) ไม่มี `.lastrowid` — ใช้ `INSERT ... RETURNING <pk>` แล้ว
@@ -89,7 +94,6 @@ pytest -q                              # smoke test
 
 ## สิ่งที่ยังไม่ทำ
 
-- endpoint สั่งรัน risk engine ใหม่ผ่าน API (ตอนนี้รันผ่าน `seed_database.py` เท่านั้น)
 - ส่วน "Document Intelligence" (OCR/อ่านเอกสาร) ตามชื่อ Mission
 - deploy จริง (Vercel serverless) ยังต้องชี้ `DATABASE_URL` ไป managed Postgres ที่ persistent
   (เช่น Neon/Supabase/RDS) — ยังไม่ได้ provision

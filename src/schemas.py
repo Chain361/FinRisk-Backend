@@ -87,3 +87,18 @@ class AssignmentUpdate(BaseModel):
 class AssignmentStatusUpdate(BaseModel):
     status: AssignmentStatus
     note: str | None = Field(default=None, max_length=5000)
+
+
+class RiskEngineRunOut(BaseModel):
+    run_id: int
+    run_at: str
+    triggered_by: str
+    project_count: int
+    annual_count: int
+
+
+class DataUploadOut(BaseModel):
+    subdistrict_id: int
+    projects_inserted: int
+    projects_skipped_duplicate: list[str]
+    financial_rows_inserted: int

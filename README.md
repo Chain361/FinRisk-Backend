@@ -60,14 +60,15 @@ data_modelling/
 │  ├─ main.py                   # entry point — รวม router + CORS + /health
 │  ├─ config.py                 # path DB, CORS origin, ค่าคงที่
 │  ├─ database.py               # ตัวช่วยต่อ PostgreSQL (dependency get_db)
-│  ├─ auth.py                   # mock login + role/scope guard
+│  ├─ auth.py                   # login (bcrypt + JWT) + role/scope guard
 │  ├─ schemas.py                # Pydantic models
 │  └─ routers/                  # endpoint แยกตามโดเมน
 │     ├─ auth.py                # /auth/login, /auth/me
 │     ├─ subdistricts.py        # /subdistricts
 │     ├─ projects.py            # /projects (+ risk score ล่าสุด)
 │     ├─ risk.py                # /risk/factors, /risk/annual, /risk/summary
-│     └─ audit.py               # /audit/assignments, /audit/feedback
+│     ├─ audit.py               # /audit/assignments, /audit/feedback
+│     └─ admin.py               # /admin/data/upload, /admin/risk-engine/run (admin เท่านั้น)
 ├─ tests/test_smoke.py          # smoke test (pytest)
 ├─ seed_database.py             # สร้าง schema บน PostgreSQL + seed + รัน risk engine + validate
 ├─ standardized_data/           # CSV กลางที่ seed อ่านเข้า
@@ -152,6 +153,18 @@ curl http://127.0.0.1:8000/subdistricts            -H "X-Username: public1"     
 > ⚠️ ตั้ง env var **`JWT_SECRET`** เป็นค่าสุ่มยาวๆ ก่อนขึ้น production (ไม่งั้นจะมี warning log
 > ตอน startup) — ดู `CLAUDE.md` หัวข้อ Auth
 
+```bash
+# admin: สั่งคำนวณ risk score ใหม่จากข้อมูลปัจจุบัน (ไม่อ่าน CSV ใหม่)
+curl -X POST http://127.0.0.1:8000/admin/risk-engine/run -H "Authorization: Bearer $TOKEN"
+
+# admin: นำเข้าโครงการ/งบการเงินรอบใหม่ของตำบลที่มีอยู่แล้ว (ฟอร์แมตตาม _schema_dictionary.md)
+curl -X POST http://127.0.0.1:8000/admin/data/upload \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "subdistrict_id=1" \
+  -F "projects_csv=@new_projects.csv;type=text/csv"
+# → รัน /admin/risk-engine/run ต่อเพื่อให้ dashboard เห็นผลข้อมูลใหม่
+```
+
 ---
 
 ## 7. เทสต์
@@ -176,7 +189,6 @@ pytest -q                # รัน smoke test (ต้องมี postgres ร
 
 ## 9. งานที่ยังต้องทำต่อ (สำหรับ dev ใหม่)
 
-- เพิ่ม endpoint สำหรับ "รัน risk engine ใหม่" (ตอนนี้รันผ่าน `seed_database.py` เท่านั้น)
 - ส่วน "Document Intelligence" (อ่านเอกสาร/OCR) ตามชื่อ Mission ยังไม่ได้เริ่ม
 - deploy จริง: ต้อง provision PostgreSQL แบบ persistent (เช่น Neon/Supabase/RDS) แล้วตั้ง
   `DATABASE_URL` บน Vercel — ยังไม่ได้ provision

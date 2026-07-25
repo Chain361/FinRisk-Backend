@@ -509,15 +509,20 @@ PINGKHONG_NOTE = ("ข้อมูลสรุป: ไม่มีหน่ว�
 # 3. Helpers
 # ---------------------------------------------------------------------------
 
-def read_csv_clean(path):
-    """อ่าน CSV แบบกัน BOM + NUL byte (§9.2)"""
-    with open(path, "rb") as f:
-        raw = f.read()
+def read_csv_clean_bytes(raw: bytes):
+    """อ่าน CSV จาก bytes แบบกัน BOM + NUL byte (§9.2) — ใช้ทั้ง seed script และ upload endpoint"""
     text = raw.decode("utf-8-sig").replace("\x00", "")
     rows = list(csv.reader(io.StringIO(text)))
     header = rows[0]
     data = [dict(zip(header, r)) for r in rows[1:] if any(c.strip() for c in r)]
     return data
+
+
+def read_csv_clean(path):
+    """อ่าน CSV จากไฟล์แบบกัน BOM + NUL byte (§9.2)"""
+    with open(path, "rb") as f:
+        raw = f.read()
+    return read_csv_clean_bytes(raw)
 
 
 def parse_date(v):
@@ -648,13 +653,17 @@ def seed_projects(cur, proj_rows, sub_id):
             "projects_ALL_master.csv"))
         inserted += 1
     log(f"projects: {inserted} โครงการ (ข้ามแถวซ้ำ {len(dups)} แถว: {', '.join(dups) or '-'})")
+    return inserted, dups
 
 
 def seed_financial(cur, fin_rows, sub_id):
+    inserted = 0
     for r in fin_rows:
         cur.execute("""INSERT INTO financial_statements (subdistrict_id, fiscal_year,
             statement_type, category, account_item, note_no, value, unit, detail_level,
-            data_quality_note, source_file) VALUES (?,?,?,?,?,?,?,?,?,?,?)""", (
+            data_quality_note, source_file) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT (subdistrict_id, fiscal_year, statement_type, category, account_item)
+            DO NOTHING""", (
             sub_id[r["ตำบล"].strip()], to_int(r["ปีงบประมาณ"]),
             r["ประเภทงบ"].strip(), r["หมวดหมู่"].strip() or None,
             r["รายการบัญชี"].strip(), r["หมายเหตุ"].strip() or None,
@@ -662,7 +671,9 @@ def seed_financial(cur, fin_rows, sub_id):
             r["ระดับรายละเอียด"].strip() or None,
             r["หมายเหตุคุณภาพข้อมูล"].strip() or None,
             r["ไฟล์ต้นฉบับ"].strip() or None))
-    log(f"financial_statements: {len(fin_rows)} แถว")
+        inserted += cur.rowcount
+    log(f"financial_statements: {inserted} แถว")
+    return inserted
 
 
 def seed_risk_factors(cur):
