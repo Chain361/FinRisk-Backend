@@ -20,3 +20,5 @@ fraud_risk.db
 .env.*
 !.env.example
 .vercel/
+.vercel
+.env*
