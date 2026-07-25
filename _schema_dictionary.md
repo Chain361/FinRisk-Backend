@@ -77,3 +77,32 @@
 - `financial_report_pingkhong_standard.csv` (2566–2568)
 - `financial_report_yonok_standard.csv` (2567–2568)
 - `financial_report_ALL_master.csv` — รวมทั้ง 3 ตำบลในไฟล์เดียว (สำหรับวิเคราะห์เปรียบเทียบ)
+
+---
+
+# ชั้นกฎหมาย + เอกสาร (Legal Linkage — docs/legal_linkage_plan.md)
+
+## ไฟล์ curate (input ของ seed)
+
+| ไฟล์ | ตารางปลายทาง | หมายเหตุ |
+| :---- | :---- | :---- |
+| `legal_refs/laws.csv` | `laws` | 6 ฉบับ; `law_code` เป็น key อ้างอิงข้ามไฟล์ |
+| `legal_refs/law_sections.csv` | `law_sections` | 9 มาตรา/ข้อ; `section_summary` เป็นสรุปเพื่อเดโม ⚠️ ให้ฝ่ายกฎหมายตรวจทานตัวบท/เลขมาตราก่อน production; `section_text` ว่างใน v1 |
+| `legal_refs/factor_legal_map.csv` | `factor_legal_map` | อ้าง (law_code, section_no); v1 ครอบ D1, L1, L2, L3 — A1 ไม่มีกฎหมาย (ตามไฟล์ case), A2/A3 เป็น phase ถัดไป |
+| `mock_documents/document_types.csv` | `document_types` | PR4/PR5/PR6; `provides_json` ใช้ตอบ "เอกสารใดระบุ X"; `required_for_project_type` ขับ L1 |
+| `mock_documents/project_documents.csv` | `project_documents` (+`document_chunks` อัตโนมัติสำหรับ status=present) | MOCK-CON-001 ครบ 3 ใบ (present), MOCK-CON-002 ขาด 3 ใบ (**seed แถว status='missing' explicit** — ไม่มีแถว ≠ ขาด) |
+| `mock_documents/document_findings.csv` | `document_findings` | `finding_key` (FND1–3) ใช้ join ภายใน CSV เท่านั้น ไม่ลง DB |
+| `mock_documents/finding_legal_map.csv` | `finding_legal_map` | อ้าง finding_key + (law_code, section_no) |
+
+## คอลัมน์ใหม่ใน `risk_factors`
+
+| คอลัมน์ | ความหมาย |
+| :---- | :---- |
+| `applies_to_project_type` | NULL = ทุกประเภท; `'จ้างก่อสร้าง'` = engine ประเมินเฉพาะประเภทนี้ (ประเภทอื่นและ `project_type IS NULL` ไม่เขียนแถวผล — จงใจ) |
+| `action_suggestion` | ข้อเสนอแนะรายข้อบ่งชี้จากไฟล์ case (A1, D1, L1–L3) |
+
+## ข้อควรระวัง
+
+- โครงการ mock: `project_id LIKE 'MOCK-%'`, `source_file='mock_legal_linkage.csv'`, `data_quality_note='MOCK สำหรับเดโม legal linkage'` — กรองออกด้วย query เดียว; frontend ควรแสดง badge MOCK
+- engine **exclude MOCK จากการนับกลุ่ม A3** (กัน mock ที่ราคากลางชนงบพลิกผล A3 ของโครงการจริง)
+- `document_findings.source` รับ 'ocr'/'llm' ใน CHECK แล้ว แต่ v1 seed เฉพาะ 'mock' — ก่อนใช้ OCR/LLM จริงต้องเพิ่ม review gate

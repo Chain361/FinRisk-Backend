@@ -134,6 +134,9 @@ CREATE TABLE risk_factors (
     impact_level  INTEGER NOT NULL DEFAULT 3 CHECK (impact_level BETWEEN 1 AND 5),  -- ผลกระทบคงที่ต่อ factor (5×5 matrix)
     legal_ref     TEXT,                              -- ฐานกฎหมาย/ระเบียบอ้างอิง (⚠️ ให้ฝ่ายกฎหมายยืนยันเลขมาตรา/ข้อ)
     data_requirement TEXT,
+    -- Legal linkage (docs/legal_linkage_plan.md §2.4)
+    applies_to_project_type TEXT,                    -- NULL = ทุกประเภท; L1–L3 = 'จ้างก่อสร้าง' (gate ใน engine)
+    action_suggestion TEXT,                          -- ข้อเสนอแนะรายข้อบ่งชี้ (จากไฟล์ case)
     enabled       INTEGER NOT NULL DEFAULT 1,
     created_at    TEXT DEFAULT (datetime('now'))
 );
@@ -289,6 +292,102 @@ CREATE TABLE access_log (
 CREATE INDEX idx_access_log_user_time ON access_log(username, created_at);
 CREATE INDEX idx_access_log_time      ON access_log(created_at);
 
+-- ===========================================================================
+-- Legal Linkage + Document Intelligence (docs/legal_linkage_plan.md §2)
+-- ชั้น mapping ใหม่ — ตารางเดิม/endpoint เดิมไม่ถูกแตะ
+-- ===========================================================================
+
+-- กฎหมายแม่ (1 พรบ./ประกาศ = 1 แถว)
+CREATE TABLE laws (
+    law_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    law_code    TEXT UNIQUE,
+    law_name_th TEXT NOT NULL,
+    law_type    TEXT CHECK (law_type IN ('พรบ.','ประกาศ','ระเบียบ','กฎกระทรวง','หลักเกณฑ์')),
+    year_be     INTEGER,
+    source_file TEXT
+);
+
+-- มาตรา/ข้อ (เก็บเฉพาะมาตราที่ curate แล้ว; section_summary เป็นสรุปเพื่อเดโม — ให้ฝ่ายกฎหมายตรวจทานก่อน production)
+CREATE TABLE law_sections (
+    section_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    law_id          INTEGER NOT NULL REFERENCES laws(law_id),
+    section_no      TEXT NOT NULL,
+    section_title   TEXT,
+    section_summary TEXT NOT NULL,
+    section_text    TEXT,
+    UNIQUE(law_id, section_no)
+);
+
+-- ตัวเชื่อม factor ↔ มาตรา (many-to-many)
+CREATE TABLE factor_legal_map (
+    map_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    factor_code TEXT NOT NULL REFERENCES risk_factors(factor_code),
+    section_id  INTEGER NOT NULL REFERENCES law_sections(section_id),
+    reason_text TEXT NOT NULL,
+    UNIQUE(factor_code, section_id)
+);
+
+-- ข้อมูลเขตอำนาจรายโครงการ (สำหรับ L2) — ข้อมูลเอกสาร (L1) อยู่ที่ project_documents ที่เดียว
+CREATE TABLE project_compliance (
+    project_id      TEXT PRIMARY KEY REFERENCES projects(project_id),
+    in_jurisdiction INTEGER,          -- 0/1/NULL (NULL = ไม่ทราบ → computable=0)
+    note            TEXT
+);
+
+-- ประเภทเอกสาร (reference) — ขับทั้ง L1 และคำถาม "เอกสารใดระบุ X"
+CREATE TABLE document_types (
+    doc_type_code TEXT PRIMARY KEY,
+    name_th       TEXT NOT NULL,
+    description   TEXT,
+    required_for_project_type TEXT,
+    provides_json TEXT DEFAULT '[]'
+);
+
+-- เอกสารรายโครงการ (mock ตอนนี้ / OCR ภายหลัง — โครงเดียวกัน)
+CREATE TABLE project_documents (
+    doc_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    TEXT NOT NULL REFERENCES projects(project_id),
+    doc_type_code TEXT NOT NULL REFERENCES document_types(doc_type_code),
+    status        TEXT NOT NULL CHECK (status IN ('present','missing','pending_review')),
+    doc_no        TEXT, doc_date TEXT,
+    summary_text  TEXT,
+    extracted_json TEXT DEFAULT '{}',
+    file_path     TEXT,
+    source        TEXT NOT NULL CHECK (source IN ('mock','ocr','manual')),
+    UNIQUE(project_id, doc_type_code)
+);
+CREATE INDEX idx_project_documents_project ON project_documents(project_id);
+
+-- ข้อสังเกต/ข้อผิดพลาดที่พบในเอกสาร
+-- ⚠️ v1 seed เฉพาะ source='mock'; เมื่อเริ่มเขียนจาก OCR/LLM จริง ต้องเพิ่ม review gate ก่อน (Mission §9)
+CREATE TABLE document_findings (
+    finding_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    doc_id        INTEGER NOT NULL REFERENCES project_documents(doc_id),
+    finding_text  TEXT NOT NULL,
+    risk_category TEXT NOT NULL,
+    observed_value TEXT, expected_value TEXT,
+    severity      TEXT DEFAULT 'medium' CHECK (severity IN ('low','medium','high')),
+    source        TEXT NOT NULL CHECK (source IN ('mock','ocr','llm','manual'))
+);
+CREATE INDEX idx_document_findings_doc ON document_findings(doc_id);
+
+-- finding ↔ มาตรา (reuse law_sections เดียวกับ factor_legal_map)
+CREATE TABLE finding_legal_map (
+    finding_id  INTEGER NOT NULL REFERENCES document_findings(finding_id),
+    section_id  INTEGER NOT NULL REFERENCES law_sections(section_id),
+    reason_text TEXT,
+    PRIMARY KEY (finding_id, section_id)
+);
+
+-- เผื่อ RAG/embedding ภายหลัง — v1 ใส่ summary เป็น 1 chunk, embedding เว้น NULL
+CREATE TABLE document_chunks (
+    chunk_id  INTEGER PRIMARY KEY AUTOINCREMENT,
+    doc_id    INTEGER NOT NULL REFERENCES project_documents(doc_id),
+    chunk_no  INTEGER NOT NULL, page_no INTEGER,
+    content_text TEXT NOT NULL,
+    embedding BLOB
+);
+
 CREATE VIEW v_subdistrict_dashboard AS
 SELECT s.name_th AS subdistrict, p.budget_year,
        COUNT(*)                              AS project_count,
@@ -342,6 +441,7 @@ RISK_FACTORS = [
     # หมายเหตุ 5×5: impact_level = ผลกระทบคงที่ต่อ factor (1–5); likelihood_map = ช่วงค่าที่วัดได้ → โอกาส 1–5
     # (ช่วงนิยามแบบ lo ≤ ค่า < hi; ใช้เฉพาะเมื่อ triggered — ถ้าไม่ triggered แต่ computable โอกาส = 1)
     dict(factor_code="A1", scope="project", name_th="ส่วนลดผิดปกติ",
+         action_suggestion="แจ้งรายละเอียดประมาณการราคา (ปร.) ให้ สตง. และตรวจสอบคุณภาพงาน/การเบิกเพิ่มภายหลัง",
          description="ส่วนลดจากราคากลางสูงผิดปกติ (>15%) อาจสะท้อนการประมูลต่ำผิดปกติเพื่อชนะงานแล้วลดคุณภาพ/เบิกเพิ่มภายหลัง",
          formula="(reference_price - contract_value) / reference_price > discount_pct_min",
          params_json=json.dumps({"discount_pct_min": 0.15,
@@ -371,6 +471,7 @@ RISK_FACTORS = [
          legal_ref="พ.ร.บ.จัดซื้อจัดจ้างฯ 2560 + หลักเกณฑ์ราคากลาง (ต้องสืบราคาตามจริง ไม่ตั้งตามงบ)",
          data_requirement="budget_amount, reference_price, dept_name (fallback: subdistrict)"),
     dict(factor_code="D1", scope="project", name_th="วงเงินหวุดหวิดใต้เกณฑ์เฉพาะเจาะจง",
+         action_suggestion="ตรวจสอบว่าไม่มีการแยกโครงการ/แบ่งซื้อแบ่งจ้างเพื่อเลี่ยงวิธีแข่งขัน และดูโครงการลักษณะเดียวกันในช่วงเวลาใกล้เคียง",
          description="วิธีเฉพาะเจาะจง + งบประมาณ 450,000–499,999 บาท หวุดหวิดใต้เพดานวิธีเฉพาะเจาะจง 500,000 อาจสะท้อนการซอยงบเลี่ยงการแข่งขัน",
          formula="purchase_method = 'เฉพาะเจาะจง' AND budget_amount BETWEEN band_low AND band_high",
          params_json=json.dumps({"band_low": 450000, "band_high": 499999,
@@ -389,6 +490,43 @@ RISK_FACTORS = [
          weight=1.0, severity="medium", impact_level=2,
          legal_ref="พ.ร.บ.จัดซื้อจัดจ้างฯ 2560 (การจัดทำแผนการจัดซื้อจัดจ้างประจำปี) + หลักธรรมาภิบาล",
          data_requirement="transaction_date หรือ announce_date (ปิงโค้งไม่มีทั้งคู่ → computable=0)"),
+    # --- Legal linkage L1–L3 (docs/legal_linkage_plan.md) — gate: เฉพาะ project_type='จ้างก่อสร้าง' ---
+    # weight = 1 เท่ากันไปก่อน (ยังไม่มีหลักฐานให้ถ่วงต่างกัน — ปรับได้ที่ตารางนี้โดยไม่แตะโค้ด)
+    dict(factor_code="L1", scope="project", name_th="ขาดเอกสารราคากลาง (ปร.4/ปร.5/ปร.6)",
+         description="งานก่อสร้างขาดเอกสารประกอบราคากลางที่ต้องมีตามประกาศคณะกรรมการราคากลางฯ — derive จาก project_documents; "
+                     "โครงการที่ไม่เคยเก็บ checklist เอกสาร = computable 0 (ห้ามตีความว่าขาด)",
+         formula="ทุก required doc_type มีแถว explicit ใน project_documents → computable; triggered เมื่อมีแถว status='missing' ≥ 1",
+         params_json=json.dumps({"required_project_type": "จ้างก่อสร้าง",
+             "likelihood_by": "n_missing",
+             "likelihood_map": [{"lo": 1, "hi": 2, "L": 3},
+                                {"lo": 2, "hi": 3, "L": 4},
+                                {"lo": 3, "hi": 999, "L": 5}]}, ensure_ascii=False),
+         weight=1.0, severity="medium", impact_level=3,
+         legal_ref="ประกาศคณะกรรมการราคากลางฯ ข้อ 20 (⚠️ ให้ฝ่ายกฎหมายยืนยันเลขข้อ)",
+         applies_to_project_type="จ้างก่อสร้าง",
+         action_suggestion="ขอเอกสาร ปร.4/ปร.5/ปร.6 จากหน่วยงานเจ้าของโครงการ และแจ้งรายละเอียด ปร. ให้ สตง. เมื่อพบว่าขาด",
+         data_requirement="project_documents (checklist เอกสาร) — โครงการจริงยังไม่มีข้อมูล → computable=0"),
+    dict(factor_code="L2", scope="project", name_th="พื้นที่ดำเนินการนอกกรอบอำนาจหน้าที่",
+         description="โครงการก่อสร้างในพื้นที่นอกเขตอำนาจหน้าที่ของเทศบาล เช่น เขตป่าสงวนแห่งชาติ โดยไม่ปรากฏการอนุญาต",
+         formula="in_jurisdiction = 0 → triggered; NULL → computable=0",
+         params_json=json.dumps({"likelihood_map": [{"lo": -0.5, "hi": 0.5, "L": 4}]}, ensure_ascii=False),
+         weight=1.0, severity="high", impact_level=4,
+         legal_ref="พรบ.วินัยการเงินการคลัง 2561 ม.65 + พรบ.ป่าสงวนแห่งชาติ (⚠️ ให้ฝ่ายกฎหมายยืนยันเลขมาตรา)",
+         applies_to_project_type="จ้างก่อสร้าง",
+         action_suggestion="ตรวจสอบขอบเขตพื้นที่ดำเนินการกับแนวเขตอำนาจหน้าที่และเอกสารการขออนุญาตใช้พื้นที่",
+         data_requirement="project_compliance.in_jurisdiction — โครงการจริงยังไม่มีข้อมูล → computable=0"),
+    dict(factor_code="L3", scope="project", name_th="เนื้อหาเอกสารราคากลางมีพิรุธ",
+         description="เอกสารราคากลาง (ปร.4/5/6) มีข้อสังเกต เช่น ปริมาณงานเกินแบบ Factor F เกินเกณฑ์ หรือราคาประกาศไม่ตรงผลคำนวณ — "
+                     "นับจาก document_findings (v1 = mock/manual เท่านั้น; findings จาก OCR/LLM ต้องผ่าน review gate ก่อน)",
+         formula="computable เมื่อมีเอกสาร status='present' ≥ 1; triggered เมื่อ document_findings ≥ 1",
+         params_json=json.dumps({"likelihood_by": "n_findings",
+             "likelihood_map": [{"lo": 1, "hi": 3, "L": 3},
+                                {"lo": 3, "hi": 999, "L": 4}]}, ensure_ascii=False),
+         weight=1.0, severity="medium", impact_level=3,
+         legal_ref="พรบ.วินัยการเงินการคลัง 2561 ม.6 + หลักเกณฑ์ราคากลางฯ (⚠️ ให้ฝ่ายกฎหมายยืนยัน)",
+         applies_to_project_type="จ้างก่อสร้าง",
+         action_suggestion="ตรวจทานเอกสาร ปร. เทียบแบบแปลนและตาราง Factor F แจ้งรายละเอียดให้ สตง. เมื่อยืนยันข้อสังเกต",
+         data_requirement="project_documents + document_findings — โครงการจริงยังไม่มีเอกสาร → computable=0"),
     # --- ระดับงบรายปี Y1–Y3 (§11.3) ---
     dict(factor_code="Y1", scope="annual", name_th="อัตราการพึ่งพาตนเองทางการคลัง",
          description="(รายได้จัดเก็บเอง + รายได้รัฐจัดเก็บให้) / (รายได้รวม − เงินกู้) × 100 — ต่ำ = พึ่งพาเงินอุดหนุนสูง เปราะบางทางการคลัง (เงินกู้ไม่มีในข้อมูล → ถือเป็น 0)",
@@ -502,6 +640,31 @@ MOCK_USERS = [
 
 PINGKHONG_NOTE = ("ข้อมูลสรุป: ไม่มีหน่วยงาน วันที่ พิกัด TIN และเลขสัญญา — "
                   "factor ที่ใช้วันที่ (F1) คำนวณไม่ได้; งบการเงินมีเฉพาะระดับ subtotal")
+
+# ---------------------------------------------------------------------------
+# Legal linkage: ไฟล์ curate + mock 2 โครงการก่อสร้าง (docs/legal_linkage_plan.md §4)
+# ---------------------------------------------------------------------------
+
+LEGAL_DIR = os.path.join(BASE_DIR, "legal_refs")
+MOCKDOC_DIR = os.path.join(BASE_DIR, "mock_documents")
+MOCK_NOTE = "MOCK สำหรับเดโม legal linkage"
+
+# ทั้งคู่อยู่ตำบลโยนก, dept_name แยกจากหน่วยงานจริง (กันชนกลุ่ม A3 อีกชั้นนอกเหนือจาก exclude ใน engine)
+MOCK_PROJECTS = [
+    # CON-001: A1 (ลด ~21%) + เอกสารครบแต่มี findings 3 จุด → L3; in_jurisdiction=1
+    dict(project_id="MOCK-CON-001", sub="โยนก", year=2568,
+         # งานอาคาร (ไม่ใช่งานทาง) — ประกาศฯ ข้อ 20 (1) กำหนดให้งานอาคารใช้ ปร.4/ปร.5/ปร.6
+         # ส่วนงานทาง/สะพาน ใช้แบบฟอร์มสรุปราคากลางงานทาง (ข้อ 20 (2)) → L1 จะอ้างผิดแบบฟอร์ม
+         name="ก่อสร้างอาคารอเนกประสงค์ (เดโมชั้นกฎหมาย)",
+         method="e-bidding", budget=5250000.0, ref=5200000.0, contract=4100000.0,
+         tx_date="2025-03-10", in_jurisdiction=1, jur_note=None),
+    # CON-002: D1 (498,000 เฉพาะเจาะจง) + ขาด ปร.4/5/6 → L1 + ป่าสงวน → L2
+    dict(project_id="MOCK-CON-002", sub="โยนก", year=2568,
+         name="ก่อสร้างรางระบายน้ำ คสล. (เดโมชั้นกฎหมาย)",
+         method="เฉพาะเจาะจง", budget=498000.0, ref=497000.0, contract=460000.0,
+         tx_date="2025-06-05", in_jurisdiction=0,
+         jur_note="พื้นที่ดำเนินการอยู่ในเขตป่าสงวนแห่งชาติ (สถานการณ์เดโม)"),
+]
 
 # ---------------------------------------------------------------------------
 # 3. Helpers
@@ -669,12 +832,13 @@ def seed_financial(cur, fin_rows, sub_id):
 def seed_risk_factors(cur):
     for f in RISK_FACTORS:
         cur.execute("""INSERT INTO risk_factors (factor_code, scope, name_th, description,
-            formula, params_json, weight, severity, impact_level, legal_ref, data_requirement)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)""", (
+            formula, params_json, weight, severity, impact_level, legal_ref, data_requirement,
+            applies_to_project_type, action_suggestion)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
             f["factor_code"], f["scope"], f["name_th"], f["description"], f["formula"],
             f["params_json"], f["weight"], f["severity"], f["impact_level"], f["legal_ref"],
-            f["data_requirement"]))
-    log(f"risk_factors: {len(RISK_FACTORS)} factors (A1–F1 + Y1–Y3)")
+            f["data_requirement"], f.get("applies_to_project_type"), f.get("action_suggestion")))
+    log(f"risk_factors: {len(RISK_FACTORS)} factors (A1–F1 + L1–L3 + Y1–Y3)")
 
 
 def seed_users_config(cur, sub_id):
@@ -695,6 +859,94 @@ def seed_users_config(cur, sub_id):
                 ("data_seeded_at", datetime.now().astimezone().isoformat(timespec="seconds"),
                  "วันเวลาที่ seed ข้อมูลลง DB (data snapshot as-of)"))
     log(f"roles: {len(ROLES)} | users: {len(MOCK_USERS)} (mock, รหัสผ่าน password123) | app_config: {len(APP_CONFIG) + 1}")
+
+# ---------------------------------------------------------------------------
+# 4.5 Seed ชั้นกฎหมาย + เอกสาร + mock (docs/legal_linkage_plan.md §3–§4)
+# ---------------------------------------------------------------------------
+
+def seed_legal_layer(cur, sub_id):
+    """laws/law_sections/factor_legal_map จาก legal_refs/ + mock 2 โครงการ +
+    document_types/project_documents/document_findings/finding_legal_map จาก mock_documents/"""
+    # 1) ชั้นกฎหมาย
+    for r in read_csv_clean(os.path.join(LEGAL_DIR, "laws.csv")):
+        cur.execute("""INSERT INTO laws (law_code, law_name_th, law_type, year_be, source_file)
+            VALUES (?,?,?,?,?)""",
+                    (r["law_code"].strip(), r["law_name_th"].strip(),
+                     r["law_type"].strip() or None, to_int(r["year_be"]),
+                     r["source_file"].strip() or None))
+    law_id = {code: lid for lid, code in cur.execute("SELECT law_id, law_code FROM laws")}
+    for r in read_csv_clean(os.path.join(LEGAL_DIR, "law_sections.csv")):
+        cur.execute("""INSERT INTO law_sections (law_id, section_no, section_title, section_summary, section_text)
+            VALUES (?,?,?,?,?)""",
+                    (law_id[r["law_code"].strip()], r["section_no"].strip(),
+                     r["section_title"].strip() or None, r["section_summary"].strip(),
+                     (r.get("section_text") or "").strip() or None))
+    sec_id = {(lc, sn): sid for sid, lc, sn in cur.execute(
+        """SELECT s.section_id, l.law_code, s.section_no
+           FROM law_sections s JOIN laws l ON l.law_id = s.law_id""")}
+    for r in read_csv_clean(os.path.join(LEGAL_DIR, "factor_legal_map.csv")):
+        cur.execute("INSERT INTO factor_legal_map (factor_code, section_id, reason_text) VALUES (?,?,?)",
+                    (r["factor_code"].strip(),
+                     sec_id[(r["law_code"].strip(), r["section_no"].strip())],
+                     r["reason_text"].strip()))
+    log(f"laws: {len(law_id)} | law_sections: {len(sec_id)} | factor_legal_map: "
+        f"{cur.execute('SELECT COUNT(*) FROM factor_legal_map').fetchone()[0]} แถว")
+
+    # 2) mock 2 โครงการก่อสร้าง (ตำบลโยนก) + project_compliance
+    for mp in MOCK_PROJECTS:
+        ratio = round(mp["contract"] / mp["ref"], 4)
+        cur.execute("""INSERT INTO projects (project_id, subdistrict_id, budget_year, project_name,
+            project_type, dept_name, purchase_method, purchase_method_group,
+            transaction_date, budget_amount, reference_price, contract_value, price_ratio,
+            data_quality_note, source_file) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+            mp["project_id"], sub_id[mp["sub"]], mp["year"], mp["name"],
+            "จ้างก่อสร้าง", "กองช่าง (เดโม)", mp["method"], mp["method"],
+            mp["tx_date"], mp["budget"], mp["ref"], mp["contract"], ratio,
+            MOCK_NOTE, "mock_legal_linkage.csv"))
+        cur.execute("INSERT INTO project_compliance (project_id, in_jurisdiction, note) VALUES (?,?,?)",
+                    (mp["project_id"], mp["in_jurisdiction"], mp["jur_note"]))
+    log(f"mock projects: {len(MOCK_PROJECTS)} โครงการ (โยนก, dept='กองช่าง (เดโม)') + project_compliance")
+
+    # 3) ชั้นเอกสาร
+    for r in read_csv_clean(os.path.join(MOCKDOC_DIR, "document_types.csv")):
+        cur.execute("""INSERT INTO document_types (doc_type_code, name_th, description,
+            required_for_project_type, provides_json) VALUES (?,?,?,?,?)""",
+                    (r["doc_type_code"].strip(), r["name_th"].strip(),
+                     r["description"].strip() or None,
+                     r["required_for_project_type"].strip() or None,
+                     r["provides_json"].strip() or "[]"))
+    for r in read_csv_clean(os.path.join(MOCKDOC_DIR, "project_documents.csv")):
+        cur.execute("""INSERT INTO project_documents (project_id, doc_type_code, status,
+            doc_no, doc_date, summary_text, extracted_json, file_path, source)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (r["project_id"].strip(), r["doc_type_code"].strip(), r["status"].strip(),
+                     r["doc_no"].strip() or None, r["doc_date"].strip() or None,
+                     r["summary_text"].strip() or None, r["extracted_json"].strip() or "{}",
+                     r["file_path"].strip() or None, r["source"].strip()))
+        # v1: summary ของเอกสาร present = 1 chunk (embedding NULL จนกว่าจะทำ RAG จริง)
+        if r["status"].strip() == "present" and r["summary_text"].strip():
+            doc_id = cur.lastrowid
+            cur.execute("""INSERT INTO document_chunks (doc_id, chunk_no, content_text)
+                VALUES (?,1,?)""", (doc_id, r["summary_text"].strip()))
+    doc_id_of = {(pid, dt): did for did, pid, dt in cur.execute(
+        "SELECT doc_id, project_id, doc_type_code FROM project_documents")}
+    finding_id_of = {}
+    for r in read_csv_clean(os.path.join(MOCKDOC_DIR, "document_findings.csv")):
+        cur.execute("""INSERT INTO document_findings (doc_id, finding_text, risk_category,
+            observed_value, expected_value, severity, source) VALUES (?,?,?,?,?,?,?)""",
+                    (doc_id_of[(r["project_id"].strip(), r["doc_type_code"].strip())],
+                     r["finding_text"].strip(), r["risk_category"].strip(),
+                     r["observed_value"].strip() or None, r["expected_value"].strip() or None,
+                     r["severity"].strip() or "medium", r["source"].strip()))
+        finding_id_of[r["finding_key"].strip()] = cur.lastrowid
+    for r in read_csv_clean(os.path.join(MOCKDOC_DIR, "finding_legal_map.csv")):
+        cur.execute("INSERT INTO finding_legal_map (finding_id, section_id, reason_text) VALUES (?,?,?)",
+                    (finding_id_of[r["finding_key"].strip()],
+                     sec_id[(r["law_code"].strip(), r["section_no"].strip())],
+                     (r["reason_text"] or "").strip() or None))
+    log(f"document_types: {cur.execute('SELECT COUNT(*) FROM document_types').fetchone()[0]} | "
+        f"project_documents: {len(doc_id_of)} | document_findings: {len(finding_id_of)} | "
+        f"finding_legal_map: {cur.execute('SELECT COUNT(*) FROM finding_legal_map').fetchone()[0]} แถว")
 
 # ---------------------------------------------------------------------------
 # 5. Risk Engine — ระดับโครงการ (§10) + 5×5 matrix (โอกาส × ผลกระทบ)
@@ -735,6 +987,10 @@ def run_project_engine(cur, run_id):
         "SELECT factor_code, params_json FROM risk_factors WHERE scope='project' AND enabled=1")}
     impacts = {code: imp for code, imp in cur.execute(
         "SELECT factor_code, impact_level FROM risk_factors WHERE scope='project' AND enabled=1")}
+    # gate ตามประเภทโครงการ (L1–L3 = 'จ้างก่อสร้าง'; NULL = ทุกประเภท)
+    applies = {code: a for code, a in cur.execute(
+        "SELECT factor_code, applies_to_project_type FROM risk_factors WHERE scope='project' AND enabled=1")}
+    doc_names = {dt: n for dt, n in cur.execute("SELECT doc_type_code, name_th FROM document_types")}
     band = load_matrix_bands(cur)
     cur.execute("""SELECT p.*, s.name_th AS sub_name FROM projects p
                    JOIN subdistricts s ON s.subdistrict_id = p.subdistrict_id""")
@@ -746,6 +1002,10 @@ def run_project_engine(cur, run_id):
     gap_max, min_occ = p3.get("gap_pct_max", 0.005), p3.get("min_occurrences", 2)
     group_hits = {}
     for p in projects:
+        # กัน mock ปนเปื้อน A3 (legal_linkage_plan §3): mock ที่ราคากลางชนงบต้องไม่เพิ่ม count
+        # ของกลุ่ม fallback "ตำบล:..." จนพลิกผล A3 ของโครงการจริง
+        if p["project_id"].startswith("MOCK-"):
+            continue
         if p["budget_amount"] and p["reference_price"]:
             gap = abs(p["reference_price"] - p["budget_amount"]) / p["budget_amount"]
             if gap < gap_max:
@@ -845,6 +1105,63 @@ def run_project_engine(cur, run_id):
                      likelihood_from_map(m, factors["F1"].get("likelihood_map"), trig))
             else:
                 emit(pid, "F1", 0, 0, None, factors["F1"], "ประเมินไม่ได้: ไม่มีวันที่ทำรายการ/วันประกาศ")
+
+        # --- Legal linkage L1–L3 (legal_linkage_plan §3) ---
+        # gate: applies_to_project_type ไม่ตรง → ไม่เขียนแถวผลเลย (skip สะอาดกว่านับเป็น not-computable)
+        # โครงการ project_type IS NULL (มี 1 แถวจริง) จงใจให้ skip ตามเกณฑ์เดียวกัน
+        for lcode in ("L1", "L2", "L3"):
+            if lcode not in factors:
+                continue
+            if applies.get(lcode) and p["project_type"] != applies[lcode]:
+                continue
+
+            if lcode == "L1":
+                # computable ⇔ ทุก required doc_type มีแถว explicit; ไม่มีแถวเลย = ไม่เคยเก็บ → computable=0
+                req = [dt for (dt,) in cur.execute(
+                    "SELECT doc_type_code FROM document_types WHERE required_for_project_type=?",
+                    (p["project_type"],))]
+                have = {dt: st for dt, st in cur.execute(
+                    "SELECT doc_type_code, status FROM project_documents WHERE project_id=?", (pid,))}
+                if not req or not all(dt in have for dt in req):
+                    emit(pid, "L1", 0, 0, None, factors["L1"],
+                         "ประเมินไม่ได้: ไม่มีข้อมูล checklist เอกสาร (ยังไม่เคยเก็บ — ไม่ตีความว่าขาดเอกสาร)")
+                else:
+                    missing = [dt for dt in req if have[dt] == "missing"]
+                    trig = len(missing) >= 1
+                    emit(pid, "L1", trig, 1, float(len(missing)), factors["L1"],
+                         ("ขาดเอกสาร: " + ", ".join(doc_names.get(dt, dt) for dt in missing)) if trig
+                         else "เอกสารราคากลางครบถ้วน (" + ", ".join(doc_names.get(dt, dt) for dt in req) + ")",
+                         likelihood_from_map(len(missing), factors["L1"].get("likelihood_map"), trig))
+
+            elif lcode == "L2":
+                row = cur.execute("SELECT in_jurisdiction FROM project_compliance WHERE project_id=?",
+                                  (pid,)).fetchone()
+                ij = row[0] if row else None
+                if ij is None:
+                    emit(pid, "L2", 0, 0, None, factors["L2"],
+                         "ประเมินไม่ได้: ไม่มีข้อมูลเขตอำนาจหน้าที่ (in_jurisdiction)")
+                else:
+                    trig = ij == 0
+                    emit(pid, "L2", trig, 1, float(ij), factors["L2"],
+                         "พื้นที่ดำเนินการนอกกรอบอำนาจหน้าที่" if trig else "พื้นที่อยู่ในเขตอำนาจหน้าที่",
+                         likelihood_from_map(ij, factors["L2"].get("likelihood_map"), trig))
+
+            elif lcode == "L3":
+                n_present = cur.execute(
+                    "SELECT COUNT(*) FROM project_documents WHERE project_id=? AND status='present'",
+                    (pid,)).fetchone()[0]
+                if n_present == 0:
+                    emit(pid, "L3", 0, 0, None, factors["L3"],
+                         "ประเมินไม่ได้: ไม่มีเอกสารสถานะ present ให้ตรวจเนื้อหา")
+                else:
+                    n_f = cur.execute("""SELECT COUNT(*) FROM document_findings df
+                        JOIN project_documents pd ON pd.doc_id = df.doc_id
+                        WHERE pd.project_id=?""", (pid,)).fetchone()[0]
+                    trig = n_f >= 1
+                    emit(pid, "L3", trig, 1, float(n_f), factors["L3"],
+                         f"พบข้อสังเกตในเอกสารราคากลาง {n_f} รายการ" if trig
+                         else "ตรวจเนื้อหาเอกสารแล้วไม่พบข้อสังเกต",
+                         likelihood_from_map(n_f, factors["L3"].get("likelihood_map"), trig))
 
     # รวมคะแนน (§5.4)
     med_min = float(cur.execute("SELECT value FROM app_config WHERE key='risk_level_medium_min'").fetchone()[0])
@@ -1081,10 +1398,11 @@ def validate(cur):
         print(f"  [{status}] {name}" + (f" — {detail}" if detail else ""))
         ok = ok and passed
 
-    n_proj = cur.execute("SELECT COUNT(*) FROM projects").fetchone()[0]
+    n_real = cur.execute("SELECT COUNT(*) FROM projects WHERE project_id NOT LIKE 'MOCK-%'").fetchone()[0]
+    n_mock = cur.execute("SELECT COUNT(*) FROM projects WHERE project_id LIKE 'MOCK-%'").fetchone()[0]
     n_fs = cur.execute("SELECT COUNT(*) FROM financial_statements").fetchone()[0]
-    check("1) จำนวนแถว: projects=96, financial_statements=337",
-          n_proj == 96 and n_fs == 337, f"ได้ {n_proj}/{n_fs}")
+    check("1) จำนวนแถว: projects จริง=96 + mock=2, financial_statements=337",
+          n_real == 96 and n_mock == 2 and n_fs == 337, f"ได้ {n_real}+{n_mock}/{n_fs}")
 
     n = cur.execute("SELECT COUNT(*) FROM projects WHERE subdistrict_id IS NULL").fetchone()[0]
     check("2) ทุกโครงการ map ตำบลได้", n == 0)
@@ -1115,11 +1433,19 @@ def validate(cur):
     check("5) ปีงบอยู่ในช่วง 2566–2568", n == 0)
 
     # ทุกโครงการมีผลครบทุก enabled project factor (§10 "ห้ามเงียบ")
-    n_pf = cur.execute("SELECT COUNT(*) FROM risk_factors WHERE scope='project' AND enabled=1").fetchone()[0]
-    n_bad = cur.execute("""SELECT COUNT(*) FROM (SELECT project_id FROM project_risk_results
-        WHERE run_id=(SELECT MAX(run_id) FROM assessment_runs)
-        GROUP BY project_id HAVING COUNT(*) != ?)""", (n_pf,)).fetchone()[0]
-    check(f"6) ทุกโครงการมีผลครบ {n_pf} project factors", n_bad == 0)
+    # ยกเว้น factor ที่ gate ด้วย applies_to_project_type (L1–L3) — มีแถวเฉพาะประเภทที่ตรง
+    n_base = cur.execute("""SELECT COUNT(*) FROM risk_factors
+        WHERE scope='project' AND enabled=1 AND applies_to_project_type IS NULL""").fetchone()[0]
+    n_l = cur.execute("""SELECT COUNT(*) FROM risk_factors
+        WHERE scope='project' AND enabled=1 AND applies_to_project_type='จ้างก่อสร้าง'""").fetchone()[0]
+    n_bad = cur.execute("""SELECT COUNT(*) FROM projects p
+        LEFT JOIN (SELECT project_id, COUNT(*) c FROM project_risk_results
+                   WHERE run_id=(SELECT MAX(run_id) FROM assessment_runs)
+                   GROUP BY project_id) r ON r.project_id = p.project_id
+        WHERE COALESCE(r.c, 0) != ? + (CASE WHEN p.project_type='จ้างก่อสร้าง' THEN ? ELSE 0 END)""",
+        (n_base, n_l)).fetchone()[0]
+    check(f"6) ทุกโครงการมีผลครบ {n_base} base factors (+{n_l} L-factors เฉพาะก่อสร้าง)", n_bad == 0,
+          f"โครงการที่จำนวนผลไม่ตรง {n_bad}")
 
     # ทุก (ตำบล×ปีที่มีงบ) มีผลครบทุก annual factor
     n_af = cur.execute("SELECT COUNT(*) FROM risk_factors WHERE scope='annual' AND enabled=1").fetchone()[0]
@@ -1162,6 +1488,38 @@ def validate(cur):
     check("10) auditor feedback (demo) มีข้อมูล ครบ 3 สถานะ และ concern อยู่ในชุด low/medium/high",
           n_fb > 0 and n_fb_status == 3 and n_fb_bad_concern == 0,
           f"rows={n_fb}, statuses={n_fb_status}, concern ผิด={n_fb_bad_concern}")
+
+    # 11) ชั้นกฎหมาย+เอกสาร seed ครบ (legal_linkage_plan)
+    n_laws = cur.execute("SELECT COUNT(*) FROM laws").fetchone()[0]
+    n_sec = cur.execute("SELECT COUNT(*) FROM law_sections").fetchone()[0]
+    n_fmap = cur.execute("SELECT COUNT(*) FROM factor_legal_map").fetchone()[0]
+    n_find = cur.execute("SELECT COUNT(*) FROM document_findings").fetchone()[0]
+    n_findmap = cur.execute("SELECT COUNT(*) FROM finding_legal_map").fetchone()[0]
+    check("11) legal layer: laws=6, sections=9, factor_map=8, findings=3, finding_map=3",
+          n_laws == 6 and n_sec == 9 and n_fmap == 8 and n_find == 3 and n_findmap == 3,
+          f"ได้ {n_laws}/{n_sec}/{n_fmap}/{n_find}/{n_findmap}")
+
+    # 12) mock trigger ตาม scenario: CON-001 = A1+L3, CON-002 = D1+L1+L2
+    run_q = "(SELECT MAX(run_id) FROM assessment_runs)"
+    trig1 = {c for (c,) in cur.execute(f"""SELECT factor_code FROM project_risk_results
+        WHERE run_id={run_q} AND project_id='MOCK-CON-001' AND triggered=1""")}
+    trig2 = {c for (c,) in cur.execute(f"""SELECT factor_code FROM project_risk_results
+        WHERE run_id={run_q} AND project_id='MOCK-CON-002' AND triggered=1""")}
+    check("12) mock scenario: CON-001 trigger A1+L3, CON-002 trigger D1+L1+L2",
+          trig1 == {"A1", "L3"} and trig2 == {"D1", "L1", "L2"},
+          f"CON-001={sorted(trig1)}, CON-002={sorted(trig2)}")
+
+    # 13) L-factor ของโครงการจริง (ไม่มีข้อมูล compliance/เอกสาร) ต้อง computable=0 ทั้งหมด
+    #     → risk score เดิมไม่เพี้ยน (หลัก fraud_risk_flag ว่าง ≠ FALSE)
+    n_l_comp = cur.execute(f"""SELECT COUNT(*) FROM project_risk_results
+        WHERE run_id={run_q} AND factor_code IN ('L1','L2','L3')
+        AND project_id NOT LIKE 'MOCK-%' AND computable=1""").fetchone()[0]
+    n_l_other = cur.execute(f"""SELECT COUNT(*) FROM project_risk_results prr
+        JOIN projects p ON p.project_id = prr.project_id
+        WHERE prr.run_id={run_q} AND prr.factor_code IN ('L1','L2','L3')
+        AND (p.project_type != 'จ้างก่อสร้าง' OR p.project_type IS NULL)""").fetchone()[0]
+    check("13) L-factor: โครงการจริง computable=0 ทุกแถว และไม่มีแถวหลุดไปประเภทอื่น/NULL",
+          n_l_comp == 0 and n_l_other == 0, f"computable หลุด {n_l_comp}, ประเภทอื่น {n_l_other}")
 
     return ok
 
@@ -1206,9 +1564,14 @@ def main():
         else:
             sys.exit(f"มี {args.db} อยู่แล้ว — ใช้ --force เพื่อสร้างใหม่")
 
-    for f in (PROJECTS_CSV, FINANCIAL_CSV):
+    legal_files = [os.path.join(LEGAL_DIR, f) for f in
+                   ("laws.csv", "law_sections.csv", "factor_legal_map.csv")]
+    mockdoc_files = [os.path.join(MOCKDOC_DIR, f) for f in
+                     ("document_types.csv", "project_documents.csv",
+                      "document_findings.csv", "finding_legal_map.csv")]
+    for f in [PROJECTS_CSV, FINANCIAL_CSV] + legal_files + mockdoc_files:
         if not os.path.exists(f):
-            sys.exit(f"ไม่พบไฟล์ {f} — วาง CSV ไว้โฟลเดอร์เดียวกับ script")
+            sys.exit(f"ไม่พบไฟล์ {f} — วาง CSV ไว้ตามโครงสร้าง (standardized_data/, legal_refs/, mock_documents/)")
 
     print("[1/5] อ่าน CSV (กัน BOM + NUL byte)")
     proj_rows = read_csv_clean(PROJECTS_CSV)
@@ -1229,6 +1592,7 @@ def main():
     seed_financial(cur, fin_rows, sub_id)
     seed_risk_factors(cur)
     seed_users_config(cur, sub_id)
+    seed_legal_layer(cur, sub_id)   # legal linkage + mock 2 โครงการ (ต้องมาก่อน engine — L1/L3 อ่าน project_documents)
     con.commit()
 
     print("[4/5] รัน risk engine ครั้งแรก")

@@ -113,13 +113,23 @@ data_modelling/
 │  ├─ database.py               # ตัวช่วยต่อ SQLite (dependency get_db)
 │  ├─ auth.py                   # mock login + role/scope guard
 │  ├─ schemas.py                # Pydantic models
+│  ├─ services/                 # service function (contract ที่ router + chatbot ใช้ร่วมกัน)
+│  │  ├─ common.py              # scope guard + latest_run_id + domain error
+│  │  ├─ legal.py               # ชั้นกฎหมาย (laws/sections/factor_legal_map)
+│  │  └─ documents.py           # ชั้นเอกสาร (doc types/status/missing/findings)
 │  └─ routers/                  # endpoint แยกตามโดเมน
 │     ├─ auth.py                # /auth/login, /auth/me
 │     ├─ subdistricts.py        # /subdistricts
 │     ├─ projects.py            # /projects (+ risk score ล่าสุด)
 │     ├─ risk.py                # /risk/factors, /risk/annual, /risk/summary
-│     └─ audit.py               # /audit/assignments, /audit/feedback
-├─ tests/test_smoke.py          # smoke test (pytest)
+│     ├─ audit.py               # /audit/assignments, /audit/feedback
+│     ├─ legal.py               # /legal/laws, /risk/projects/{id}/legal
+│     └─ documents.py           # /documents/types, /projects/{id}/documents
+├─ tests/
+│  ├─ test_smoke.py             # smoke test (pytest)
+│  └─ test_legal_documents.py   # เทสต์ชั้นกฎหมาย + ชั้นเอกสาร
+├─ legal_refs/                  # CSV กฎหมายที่ curate แล้ว (laws, law_sections, factor_legal_map)
+├─ mock_documents/              # CSV ชั้นเอกสาร mock (doc types, documents, findings, finding map)
 ├─ seed_database.py             # สร้าง DB + seed + รัน risk engine + validate
 ├─ fraud_risk.db                # SQLite (สร้างจาก seed — ไม่ commit ตาม .gitignore)
 ├─ standardized_data/           # CSV กลางที่ seed อ่านเข้า
@@ -149,7 +159,11 @@ data_modelling/
 
 ดู ERD เต็มได้ที่ `data_model_erd.mermaid` และคำอธิบายทุกตาราง/คอลัมน์ที่ `data_model_design.md`
 
-### Risk factors (8 ตัว)
+**Legal linkage + document layer** (ดู `docs/legal_linkage_plan.md`) — `laws`, `law_sections`,
+`factor_legal_map`, `project_compliance`, `document_types`, `project_documents`,
+`document_findings`, `finding_legal_map`, `document_chunks`
+
+### Risk factors (11 ตัว)
 
 | Code | ระดับ | ชื่อ |
 |---|---|---|
@@ -158,6 +172,9 @@ data_modelling/
 | A3 | project | ราคากลางชนงบพอดี |
 | D1 | project | วงเงินหวุดหวิดใต้เกณฑ์เฉพาะเจาะจง |
 | F1 | project | จัดจ้างกระจุกตัวท้ายปีงบ |
+| L1 | project | ขาดเอกสารราคากลาง (ปร.4/ปร.5/ปร.6) — เฉพาะ `จ้างก่อสร้าง` |
+| L2 | project | พื้นที่ดำเนินการนอกกรอบอำนาจหน้าที่ — เฉพาะ `จ้างก่อสร้าง` |
+| L3 | project | เนื้อหาเอกสารราคากลางมีพิรุธ — เฉพาะ `จ้างก่อสร้าง` |
 | Y1 | annual | อัตราการพึ่งพาตนเองทางการคลัง |
 | Y2 | annual | ดุลการดำเนินงานประจำปี |
 | Y3 | annual | Cash Coverage Ratio |
@@ -199,7 +216,17 @@ curl -X POST http://127.0.0.1:8000/auth/login \
 curl http://127.0.0.1:8000/projects?risk_level=high -H "X-Username: admin"
 curl http://127.0.0.1:8000/risk/summary            -H "X-Username: thachang_user"
 curl http://127.0.0.1:8000/subdistricts            -H "X-Username: public1"   # ประชาชน: เห็นทุกตำบล
+
+# ชั้นกฎหมาย + ชั้นเอกสาร (legal linkage) — โครงการเดโม MOCK-CON-001/002 อยู่ตำบลโยนก
+curl http://127.0.0.1:8000/legal/laws                              -H "X-Username: admin"
+curl http://127.0.0.1:8000/risk/projects/MOCK-CON-002/legal        -H "X-Username: admin"
+curl "http://127.0.0.1:8000/risk/projects/MOCK-CON-002/legal?only_triggered=true" -H "X-Username: admin"
+curl http://127.0.0.1:8000/projects/MOCK-CON-001/documents         -H "X-Username: admin"
 ```
+
+`/risk/projects/{id}/legal` คืน risk factor ล่าสุดของโครงการพร้อม `computable`,
+`action_suggestion` และ `legal_refs` — ถ้า factor นั้น `triggered=1` แต่ยังไม่ได้ curate มาตรา
+จะได้ `legal_refs: []` + `legal_ref_note` เป็นข้อความตายตัวจาก backend (ห้าม LLM แต่งมาตราเอง)
 
 > ⚠️ **Auth เป็น mock** (token = username, sha256 ไม่มี salt) เหมาะกับ demo เท่านั้น
 > ก่อนขึ้น production ต้องเปลี่ยนเป็น bcrypt/argon2 + JWT — ดู `CLAUDE.md`
@@ -231,4 +258,6 @@ pytest -q                # รัน smoke test (ต้องมี fraud_risk.d
 - เติม business logic ของ `/audit/*` (สร้าง assignment, ส่ง audit_report) — ตอนนี้เป็นโครง read-only
 - เปลี่ยน mock auth เป็น JWT + password hashing จริง
 - เพิ่ม endpoint สำหรับ "รัน risk engine ใหม่" (ตอนนี้รันผ่าน `seed_database.py` เท่านั้น)
-- ส่วน "Document Intelligence" (อ่านเอกสาร/OCR) ตามชื่อ Mission ยังไม่ได้เริ่ม
+- ต่อ OCR จริงเข้าชั้นเอกสาร (ตอนนี้ `project_documents`/`document_findings` เป็น `source='mock'`
+  ทั้งหมด) — ก่อนให้ finding จาก OCR/LLM ขยับ risk score ต้องเพิ่ม review gate ให้คนยืนยันก่อน
+- curate mapping กฎหมายของ A2/A3 (ตอนนี้ยังไม่มี → chatbot ตอบ "ยังไม่มีการเชื่อมโยงข้อกฎหมาย")
