@@ -94,6 +94,11 @@ pytest -q                              # smoke test
 
 ## สิ่งที่ยังไม่ทำ
 
-- ส่วน "Document Intelligence" (OCR/อ่านเอกสาร) ตามชื่อ Mission
 - deploy จริง (Vercel serverless) ยังต้องชี้ `DATABASE_URL` ไป managed Postgres ที่ persistent
   (เช่น Neon/Supabase/RDS) — ยังไม่ได้ provision
+- ต่อ `ocr_pipeline/` เข้าชั้นเอกสาร — ตอนนี้ `project_documents`/`document_findings`
+  เป็น `source='mock'` ทั้งหมด ยังไม่มีแถว `source='ocr'`
+- `GET /audit/feedback` + `GET /audit/feedback/{project_id}` คืน feedback สถานะ `draft`
+  ของ auditor คนอื่นให้ทุก role ใน scope เห็น (รวม `local_executive` ซึ่งเป็นฝ่ายถูกตรวจ)
+  — ควร filter ให้ draft เห็นเฉพาะเจ้าของ
+- `GET /audit/feedback/{project_id}` ยังไม่ผ่าน scope guard (ส่ง project_id ของตำบลอื่นก็เห็นได้)

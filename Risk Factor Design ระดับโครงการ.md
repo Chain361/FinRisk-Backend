@@ -157,3 +157,47 @@ $$\text{Month of Project} \in [8, 9] \ (สิงหาคม \text{ หรื�
 
 #### Evaluation Criteria
 * **Trigger:** วันประกาศหรือวันทำธุรกรรมตรงกับเดือน $8$ (สิงหาคม) หรือเดือน $9$ (กันยายน) ของปีงบประมาณนั้นๆ
+---
+
+### L1: ขาดเอกสารราคากลาง ปร.4/ปร.5/ปร.6 (Missing Reference Price Documents)
+* **Code:** `L1` (หมวดหมู่ Legal/Compliance — จาก docs/legal_linkage_plan.md)
+* **Scope:** `project` — **เฉพาะ `project_type = 'จ้างก่อสร้าง'`** (gate ด้วย `risk_factors.applies_to_project_type`; ประเภทอื่นไม่เขียนแถวผล)
+* **Severity:** `medium` | **Weight:** 1 (เท่ากับ factor อื่นไปก่อน)
+* **Description:** งานก่อสร้างขาดเอกสารประกอบการกำหนดราคากลางที่ต้องมีตามประกาศคณะกรรมการราคากลางฯ ข้อ 20
+* **Data Requirements:** `project_documents` × `document_types.required_for_project_type`
+
+#### Evaluation Criteria
+* **Computable = 1** ⇔ ทุก required doc_type มีแถว explicit ใน `project_documents` (status ใดก็ได้)
+* **ไม่มีแถวเลย = ไม่เคยเก็บข้อมูลเอกสาร → computable = 0** (ห้ามตีความว่า "ขาดเอกสาร" — หลักเดียวกับ `fraud_risk_flag` ว่าง ≠ FALSE) → โครงการก่อสร้างจริงทั้งหมดเข้าเคสนี้ risk score เดิมไม่เพี้ยน
+* **Trigger:** computable และมี required doc ≥ 1 แถวที่ `status='missing'`
+* **Likelihood (5×5):** ตามจำนวนเอกสารที่ขาด — 1 ใบ → 3, 2 ใบ → 4, ≥3 ใบ → 5; impact = 3
+* **Legal refs (factor_legal_map):** ประกาศคณะกรรมการราคากลางฯ ข้อ 20
+
+---
+
+### L2: พื้นที่ดำเนินการนอกกรอบอำนาจหน้าที่ (Out-of-Jurisdiction Project Area)
+* **Code:** `L2` (หมวดหมู่ Legal/Compliance)
+* **Scope:** `project` — เฉพาะ `จ้างก่อสร้าง` (gate เดียวกับ L1)
+* **Severity:** `high` | **Weight:** 1
+* **Description:** โครงการก่อสร้างในพื้นที่นอกเขตอำนาจหน้าที่ของเทศบาล เช่น เขตป่าสงวนแห่งชาติ โดยไม่ปรากฏการอนุญาต
+* **Data Requirements:** `project_compliance.in_jurisdiction` (0/1/NULL)
+
+#### Evaluation Criteria
+* **Computable = 1** ⇔ `in_jurisdiction IS NOT NULL`; **Trigger** ⇔ `in_jurisdiction = 0`
+* **Likelihood:** 4 เมื่อ trigger; impact = 4
+* **Legal refs:** พรบ.วินัยการเงินการคลัง 2561 ม.65 + พรบ.ป่าสงวนแห่งชาติ ม.14 (⚠️ ฝ่ายกฎหมายยืนยันเลขมาตรา)
+
+---
+
+### L3: เนื้อหาเอกสารราคากลางมีพิรุธ (Suspicious Reference Price Document Content)
+* **Code:** `L3` (หมวดหมู่ Legal/Compliance — optional ตามแผน แต่ implement แล้ว)
+* **Scope:** `project` — เฉพาะ `จ้างก่อสร้าง`
+* **Severity:** `medium` | **Weight:** 1
+* **Description:** เอกสาร ปร.4/5/6 มีข้อสังเกต เช่น ปริมาณงานเกินแบบ, Factor F เกินเกณฑ์, ราคาประกาศไม่ตรงผลคำนวณ — นับจาก `document_findings`
+* **Data Requirements:** `project_documents` (status='present') + `document_findings`
+
+#### Evaluation Criteria
+* **Computable = 1** ⇔ มีเอกสาร `status='present'` ≥ 1; **Trigger** ⇔ `document_findings` ≥ 1
+* **Likelihood:** 1–2 findings → 3, ≥3 → 4; impact = 3
+* **⚠️ Review gate:** v1 นับเฉพาะ findings `source='mock'/'manual'` — เมื่อเริ่มเขียนจาก OCR/LLM จริง ต้องเพิ่มคอลัมน์ review_status และนับเฉพาะที่ผู้ตรวจสอบ confirm (Mission §9) เพื่อไม่ให้ AI ขยับ risk score โดยไม่ผ่านคน
+* **Legal refs:** พรบ.วินัยการเงินการคลัง 2561 ม.6 (ผ่าน factor_legal_map) + รายมาตราของแต่ละ finding (ผ่าน finding_legal_map)
