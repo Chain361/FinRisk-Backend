@@ -352,13 +352,21 @@ CREATE TABLE assignments (
     audit_steps   TEXT NOT NULL DEFAULT '',
     status        TEXT NOT NULL DEFAULT 'waiting_acceptance' CHECK (status IN (
         'waiting_acceptance','accepted','in_progress','clarification_needed',
-        'ready_for_review','under_review','revision_requested','completed'
+        'ready_for_review','under_review','pending_approval','revision_requested','completed'
     )),
     created_at    TEXT NOT NULL DEFAULT (now_text()),
     updated_at    TEXT NOT NULL DEFAULT (now_text())
 );
 CREATE INDEX idx_assignments_assignee_status ON assignments(assigned_to, status);
 ```
+
+**ขั้นอนุมัติ (approval chain — #14):** หลังผู้ตรวจสอบ (`project_auditor`) ตรวจงานที่ `under_review`
+แล้ว จะ**ส่งขออนุมัติ**แทนที่จะปิดงานเองเหมือนเดิม (`under_review → pending_approval`) จากนั้น
+เฉพาะ `regional_supervisor` เท่านั้นที่ทำ `pending_approval → completed` (อนุมัติ) หรือ
+`pending_approval → revision_requested` (ตีกลับ — **บังคับกรอกเหตุผลในช่อง `note`**) ได้
+State machine + role gate อยู่ที่ `src/routers/audit.py` (`SUPERVISOR_TRANSITIONS`); หลักฐาน
+ผู้อนุมัติ+เวลาบันทึกอัตโนมัติใน `assignment_status_history` เหมือน transition อื่นทุกจุด
+ไม่ต้องเพิ่มตารางแยก
 
 ### 6.2 `assignment_status_history` — ประวัติการเปลี่ยนสถานะงาน
 
@@ -441,6 +449,33 @@ CREATE INDEX idx_access_log_time      ON access_log(created_at);
 
 > ⚠️ **ข้อจำกัดบน Vercel:** filesystem อ่านอย่างเดียวตอน runtime → log จะไม่ถูกเขียน (ดูว่างเปล่า). ฟีเจอร์นี้ทำงานเต็มรูปแบบเมื่อ deploy บนเซิร์ฟเวอร์ที่ DB เขียนได้ (สภาพแวดล้อมจริงของหน่วยงานที่ self-host). ระยะยาว: ย้าย log ไป DB ภายนอก/managed เพื่อความคงทน.
 
+### 6.5 `notifications` — แจ้งเตือนผู้ใช้ (#19, หลักฐานว่า "แจ้งแล้วเมื่อไหร่")
+
+```sql
+CREATE TABLE notifications (
+    notification_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(user_id),
+    type       TEXT NOT NULL,          -- 'assignment' | 'high_risk'
+    message    TEXT NOT NULL,
+    ref_type   TEXT,                   -- 'assignment' | 'project'
+    ref_id     TEXT,                   -- assignment_id หรือ project_id (TEXT รองรับทั้งคู่)
+    read_at    TEXT,
+    created_at TEXT NOT NULL DEFAULT (now_text())
+);
+CREATE INDEX idx_notifications_user_unread ON notifications(user_id, read_at);
+```
+
+**Trigger points** (เขียนโดย `src/notify.py::create_notification()` — insert อย่างเดียว, commit ร่วม transaction เดียวกับจุดเรียก):
+- `POST /audit/assignments` สำเร็จ → แจ้ง `assigned_to` (risk_analyst ที่ได้รับมอบหมาย)
+- `POST /admin/risk-engine/run` → เทียบ `run_id` ปัจจุบันกับ `run_id` ก่อนหน้าใน `project_risk_scores`,
+  โครงการที่ `risk_level='high'` รอบนี้แต่ไม่ high ใน run ก่อน = "ใหม่" → แจ้ง `project_auditor`
+  ของตำบลนั้น. **ถ้าไม่มี run ก่อนหน้า (run แรกของระบบ) จะไม่แจ้งเตือน** กัน flood ตอนเริ่มระบบ.
+  Query diff อยู่ที่ `src/routers/admin.py` เท่านั้น (ไม่แตะ `run_project_engine`/`seed_database.py`
+  ตามกติกาห้ามแก้ risk logic นอกไฟล์เดียว)
+
+**อ่าน:** `GET /notifications` (ของตัวเองเท่านั้น, `?unread=true` filter), `PATCH /notifications/{id}/read`,
+`POST /notifications/read-all` — ทั้งหมดใน `src/routers/notifications.py`
+
 ---
 
 ## 7. โมดูล Legal Linkage + Document Intelligence — **implement แล้ว (2026-07-25)**
@@ -511,6 +546,14 @@ JOIN subdistricts s ON s.subdistrict_id = ar.subdistrict_id
 JOIN risk_factors rf ON rf.factor_code = ar.factor_code
 WHERE ar.run_id = (SELECT MAX(run_id) FROM assessment_runs);
 ```
+
+**Open data export (#21):** `GET /public/projects/export?format=csv|json` (`src/routers/public.py`)
+export เฉพาะ **subset ที่ปลอดภัยสำหรับสาธารณะ** — `project_id, project_name, subdistrict,
+budget_year, budget_amount, risk_score, risk_level` (query ตรง ไม่ใช้ `v_project_risk_detail`
+เพราะ view นั้นมี field ภายใน เช่น `evidence_text`/`observed_value`/รายละเอียดระดับ factor)
+JSON envelope มี `metadata.license`/`license_url`/`generated_at` ตามมาตรฐานชุดข้อมูลเปิดภาครัฐ
+(data.go.th) endpoint ยังต้อง login (ทุก role รวม `public_user`) — เปิดแบบ anonymous เต็มรูปแบบ
+เป็นงานต่อยอด ไม่รวมรอบนี้
 
 ---
 
