@@ -308,6 +308,51 @@ CREATE TABLE access_log (
 CREATE INDEX idx_access_log_user_time ON access_log(username, created_at);
 CREATE INDEX idx_access_log_time      ON access_log(created_at);
 
+-- compressed archive for access/security audit logs after hot retention window
+CREATE TABLE access_log_archive (
+    archive_id       INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    original_log_id  INTEGER NOT NULL UNIQUE,
+    username         TEXT,
+    role             TEXT,
+    action           TEXT NOT NULL,
+    method           TEXT NOT NULL,
+    path             TEXT NOT NULL,
+    resource_type    TEXT,
+    resource_id      TEXT,
+    status_code      INTEGER,
+    created_at       TEXT NOT NULL,
+    payload_gzip_base64 TEXT NOT NULL,
+    compressed_at    TEXT NOT NULL DEFAULT (now_text()),
+    delete_after     TEXT NOT NULL,
+    archived_by      TEXT
+);
+CREATE INDEX idx_access_log_archive_time
+    ON access_log_archive(created_at);
+CREATE INDEX idx_access_log_archive_user_time
+    ON access_log_archive(username, created_at);
+
+CREATE TABLE access_log_holds (
+    hold_id        INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    log_id         INTEGER NOT NULL UNIQUE,
+    reason         TEXT NOT NULL,
+    case_reference TEXT,
+    created_by     TEXT,
+    created_at     TEXT NOT NULL DEFAULT (now_text())
+);
+
+CREATE TABLE log_retention_runs (
+    run_id        INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    run_at        TEXT NOT NULL DEFAULT (now_text()),
+    hot_days      INTEGER NOT NULL,
+    archive_days  INTEGER NOT NULL,
+    archived_count INTEGER NOT NULL,
+    deleted_count  INTEGER NOT NULL,
+    archive_cutoff TEXT NOT NULL,
+    delete_cutoff  TEXT NOT NULL,
+    triggered_by   TEXT,
+    note           TEXT
+);
+
 -- ===========================================================================
 -- Legal Linkage + Document Intelligence (docs/legal_linkage_plan.md §2)
 -- ชั้น mapping ใหม่ — ตารางเดิม/endpoint เดิมไม่ถูกแตะ
@@ -619,6 +664,9 @@ APP_CONFIG = [
     ("matrix_low_max", "5", "matrix_score <= ค่านี้ → ต่ำ"),
     ("matrix_medium_max", "11", "matrix_score <= ค่านี้ → ปานกลาง"),
     ("matrix_high_max", "19", "matrix_score <= ค่านี้ → สูง; มากกว่านี้ → สูงมาก"),
+    ("log_retention_hot_days", "90", "access/security audit logs searchable in hot storage for at least this many days"),
+    ("log_retention_archive_days", "365", "compressed access/security audit log archive retention in days"),
+    ("error_debug_log_hot_days", "30", "recommended maximum hot retention for error/debug logs that may contain sensitive data"),
 ]
 
 # บทบาทตาม roles.md (5 role) + admin สำหรับดูแลระบบ — สิทธิ์/scope บังคับที่ app layer (src/auth.py)

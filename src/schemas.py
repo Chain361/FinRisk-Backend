@@ -155,3 +155,29 @@ class ChatMessageRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
     # ประวัติแชทฝั่ง client ถืออยู่ ส่งมาทุกครั้ง — backend ไม่เก็บ conversation state
     history: list[ChatTurn] = Field(default_factory=list, max_length=40)
+
+
+class LogRetentionRunOut(BaseModel):
+    run_id: int
+    run_at: str
+    hot_days: int
+    archive_days: int
+    archive_cutoff: str
+    delete_cutoff: str
+    archived_count: int
+    deleted_count: int
+
+
+class AccessLogHoldIn(BaseModel):
+    log_id: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=1000)
+    case_reference: str | None = Field(default=None, max_length=255)
+
+
+class AccessLogHoldOut(BaseModel):
+    hold_id: int
+    log_id: int
+    reason: str
+    case_reference: str | None = None
+    created_by: str | None = None
+    created_at: str
