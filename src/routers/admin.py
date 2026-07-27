@@ -22,9 +22,48 @@ from seed_database import (
 
 from ..auth import require_roles
 from ..database import Connection, get_db
+from ..notify import create_notification
 from ..schemas import DataUploadOut, RiskEngineRunOut
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+def _notify_new_high_risk_projects(cur, conn: Connection, run_id: int) -> None:
+    """แจ้งเตือน project_auditor ของตำบล เมื่อพบโครงการ risk_level='high' ใหม่ (ไม่ high ใน run ก่อนหน้า)
+    เป็น query แบบ additive เท่านั้น — ไม่แตะ/ไม่ซ้ำ risk logic ใน seed_database.py ตามกติกา CLAUDE.md
+    ถ้าไม่มี run ก่อนหน้า (run แรกของระบบ) จะไม่แจ้งเตือนเลย กัน flood ตอนเริ่มระบบ"""
+    prev_run = cur.execute(
+        "SELECT run_id FROM assessment_runs WHERE run_id < ? ORDER BY run_id DESC LIMIT 1",
+        (run_id,),
+    ).fetchone()
+    if prev_run is None:
+        return
+    prev_run_id = prev_run["run_id"]
+    newly_high = cur.execute(
+        """SELECT cur_scores.project_id, p.project_name, p.subdistrict_id
+           FROM project_risk_scores cur_scores
+           JOIN projects p ON p.project_id = cur_scores.project_id
+           WHERE cur_scores.run_id = ? AND cur_scores.risk_level = 'high'
+             AND cur_scores.project_id NOT IN (
+                 SELECT project_id FROM project_risk_scores
+                 WHERE run_id = ? AND risk_level = 'high'
+             )""",
+        (run_id, prev_run_id),
+    ).fetchall()
+    for row in newly_high:
+        auditors = cur.execute(
+            "SELECT user_id FROM users WHERE role = 'project_auditor' AND subdistrict_id = ?",
+            (row["subdistrict_id"],),
+        ).fetchall()
+        for auditor in auditors:
+            create_notification(
+                conn,
+                auditor["user_id"],
+                "high_risk",
+                f"พบโครงการเสี่ยงสูงใหม่: {row['project_name']}",
+                "project",
+                row["project_id"],
+            )
 
 
 @router.post("/risk-engine/run", response_model=RiskEngineRunOut)
@@ -44,6 +83,7 @@ def run_risk_engine(
 
     run_project_engine(cur, run_id)
     run_annual_engine(cur, run_id)
+    _notify_new_high_risk_projects(cur, conn, run_id)
     conn.commit()
 
     project_count = cur.execute(
