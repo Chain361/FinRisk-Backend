@@ -225,7 +225,7 @@ CREATE TABLE assignments (
     audit_steps   TEXT NOT NULL DEFAULT '',
     status        TEXT NOT NULL DEFAULT 'waiting_acceptance' CHECK (status IN (
         'waiting_acceptance','accepted','in_progress','clarification_needed',
-        'ready_for_review','under_review','revision_requested','completed'
+        'ready_for_review','under_review','pending_approval','revision_requested','completed'
     )),
     created_at    TEXT NOT NULL DEFAULT (now_text()),
     updated_at    TEXT NOT NULL DEFAULT (now_text())
@@ -244,6 +244,18 @@ CREATE TABLE assignment_status_history (
 );
 CREATE INDEX idx_assignment_history_assignment
     ON assignment_status_history(assignment_id, history_id);
+
+CREATE TABLE notifications (
+    notification_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(user_id),
+    type       TEXT NOT NULL,
+    message    TEXT NOT NULL,
+    ref_type   TEXT,
+    ref_id     TEXT,
+    read_at    TEXT,
+    created_at TEXT NOT NULL DEFAULT (now_text())
+);
+CREATE INDEX idx_notifications_user_unread ON notifications(user_id, read_at);
 
 CREATE TABLE audit_reports (
     report_id     INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -1404,6 +1416,82 @@ def seed_auditor_feedback(cur):
         n += 1
     log(f"auditor feedback (demo): {n} รายการ กระจาย {len(auditors)} ตำบล ครบสถานะ draft/submitted/resolved")
 
+def seed_assignments(cur):
+    """seed งานมอบหมาย (demo) — คนละ 1 โครงการ (risk สูงสุด) ต่อตำบล เดินสถานะต่างกันเพื่อให้
+    ทดสอบ workflow ครบช่วง (มอบหมายใหม่ / กำลังทำ / รออนุมัติจาก regional_supervisor) และมี
+    seed แถวใน assignment_status_history + notifications ไปด้วย (mirror hook ที่ POST /audit/assignments
+    ทำจริงตอน runtime — ตรงนี้ seed ตรงเพราะไม่ได้ผ่าน endpoint)"""
+    pairs = {}  # subdistrict_id -> {"auditor": uid, "analyst": uid, "supervisor": uid}
+    for uid, role, sid in cur.execute(
+            "SELECT user_id, role, subdistrict_id FROM users WHERE role IN ('project_auditor','risk_analyst')"):
+        pairs.setdefault(sid, {})[role] = uid
+    supervisor_id = cur.execute(
+        "SELECT user_id FROM users WHERE role='regional_supervisor' LIMIT 1"
+    ).fetchone()["user_id"]
+
+    top_project = {}  # subdistrict_id -> project_id (risk สูงสุด, run ล่าสุด)
+    for pid, sid in cur.execute("""
+            SELECT prs.project_id, p.subdistrict_id
+            FROM project_risk_scores prs
+            JOIN projects p ON p.project_id = prs.project_id
+            WHERE prs.run_id = (SELECT MAX(run_id) FROM assessment_runs)
+            ORDER BY p.subdistrict_id, prs.risk_score DESC"""):
+        top_project.setdefault(sid, pid)
+
+    # (subdistrict ลำดับ, สถานะปลายทาง, note ตอนสร้าง)
+    demo_flow = ["waiting_acceptance", "in_progress", "pending_approval"]
+
+    n = 0
+    now = datetime.now()
+    for i, sid in enumerate(sorted(pairs)):
+        people = pairs[sid]
+        project_id = top_project.get(sid)
+        if not project_id or "project_auditor" not in people or "risk_analyst" not in people:
+            continue
+        auditor_id, analyst_id = people["project_auditor"], people["risk_analyst"]
+        target_status = demo_flow[i % len(demo_flow)]
+        created_at = (now - timedelta(days=5)).strftime("%Y-%m-%d %H:%M:%S")
+
+        cur.execute("""INSERT INTO assignments
+            (project_id, assigned_to, assigned_by, priority, note, status, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?) RETURNING assignment_id""",
+            (project_id, analyst_id, auditor_id, "high", "ตรวจสอบโครงการความเสี่ยงสูง (demo)",
+             target_status, created_at, created_at))
+        assignment_id = cur.fetchone()["assignment_id"]
+        cur.execute("""INSERT INTO assignment_status_history
+            (assignment_id, old_status, new_status, changed_by, note, created_at)
+            VALUES (?,?,?,?,?,?)""",
+            (assignment_id, None, "waiting_acceptance", auditor_id, "สร้างและมอบหมายงาน", created_at))
+        cur.execute("""INSERT INTO notifications
+            (user_id, type, message, ref_type, ref_id, created_at)
+            VALUES (?,?,?,?,?,?)""",
+            (analyst_id, "assignment", "คุณได้รับมอบหมายงานตรวจสอบโครงการใหม่",
+             "assignment", str(assignment_id), created_at))
+
+        # เดินสถานะต่อจนถึงปลายทาง เพื่อให้ status_history มีหลายแถว (เหมือน flow จริง)
+        path = {
+            "in_progress": ["accepted", "in_progress"],
+            "pending_approval": ["accepted", "in_progress", "ready_for_review", "under_review", "pending_approval"],
+        }.get(target_status, [])
+        prev = "waiting_acceptance"
+        for step_i, step in enumerate(path):
+            step_ts = (now - timedelta(days=5 - step_i - 1)).strftime("%Y-%m-%d %H:%M:%S")
+            changed_by = auditor_id if step in ("under_review", "pending_approval") else analyst_id
+            cur.execute("""INSERT INTO assignment_status_history
+                (assignment_id, old_status, new_status, changed_by, note, created_at)
+                VALUES (?,?,?,?,?,?)""",
+                (assignment_id, prev, step, changed_by, None, step_ts))
+            prev = step
+        if target_status == "pending_approval":
+            cur.execute("""INSERT INTO notifications
+                (user_id, type, message, ref_type, ref_id, created_at)
+                VALUES (?,?,?,?,?,?)""",
+                (supervisor_id, "assignment", "มีงานตรวจสอบรออนุมัติปิดงาน",
+                 "assignment", str(assignment_id), now.strftime("%Y-%m-%d %H:%M:%S")))
+        n += 1
+    log(f"assignments (demo): {n} รายการ กระจาย {len(pairs)} ตำบล ครบสถานะ waiting_acceptance/in_progress/pending_approval")
+
+
 # ---------------------------------------------------------------------------
 # 7. Validation (§9.5 + §11.5)
 # ---------------------------------------------------------------------------
@@ -1650,6 +1738,7 @@ def main():
     run_project_engine(cur, run_id)
     run_annual_engine(cur, run_id)
     seed_auditor_feedback(cur)  # หลัง engine — เลือกโครงการจาก risk score จริง
+    seed_assignments(cur)       # หลัง engine — เลือกโครงการจาก risk score จริงเหมือนกัน
     con.commit()
 
     print("[5/5] Validation (§9.5)")

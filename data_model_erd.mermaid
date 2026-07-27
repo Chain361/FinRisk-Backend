@@ -169,6 +169,16 @@ erDiagram
         text user_agent
         text created_at
     }
+    notifications {
+        int notification_id PK
+        int user_id FK
+        text type "assignment/high_risk"
+        text message
+        text ref_type "assignment/project"
+        text ref_id
+        text read_at
+        text created_at
+    }
 
     subdistricts ||--o{ projects : ""
     subdistricts ||--o{ financial_statements : ""
@@ -189,6 +199,7 @@ erDiagram
     assignments ||--o{ assignment_status_history : ""
     assignments ||--o{ audit_reports : ""
     users ||--o{ auditor_feedback : ""
+    users ||--o{ notifications : ""
 
     %% --- Legal Linkage + Document Intelligence (docs/legal_linkage_plan.md) ---
     laws {

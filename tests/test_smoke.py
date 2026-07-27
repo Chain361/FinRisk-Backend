@@ -69,10 +69,11 @@ def test_all_scope_roles_see_all_subdistricts():
 
 
 def test_audit_assignments_role_gate():
-    # risk_analyst เข้าได้ (เห็นเฉพาะงานที่ได้รับมอบหมาย — ตารางยังว่างใน seed)
+    # risk_analyst เข้าได้ (เห็นเฉพาะงานที่ได้รับมอบหมาย — seed_assignments() มี 1 งาน demo ต่อตำบล)
     r = client.get("/audit/assignments", headers={"X-Username": "analyst1"})
     assert r.status_code == 200
-    assert r.json() == []
+    assert len(r.json()) == 1
+    assert r.json()[0]["status"] in ("waiting_acceptance", "in_progress", "pending_approval")
     # local_executive / public_user ไม่มีสิทธิ์งาน assignment ตาม roles.md
     for username in ("thachang_user", "public1"):
         r = client.get("/audit/assignments", headers={"X-Username": username})
@@ -200,7 +201,12 @@ def test_auditor_can_create_assignment_with_history():
     analyst = analysts.json()[0]
 
     projects = client.get("/projects", headers=auditor_headers).json()
-    project = projects[0]
+    already_assigned = {
+        item["project_id"]
+        for item in client.get("/audit/assignments", headers=auditor_headers).json()
+        if item["status"] != "completed"
+    }
+    project = next(p for p in projects if p["project_id"] not in already_assigned)
     response = client.post(
         "/audit/assignments",
         headers=auditor_headers,
@@ -247,6 +253,7 @@ def test_auditor_can_create_assignment_with_history():
         assert missing.status_code == 404
     finally:
         with db_session() as con:
+            con.execute("DELETE FROM notifications WHERE ref_type = 'assignment' AND ref_id = ?", (str(assignment_id),))
             con.execute("DELETE FROM assignment_status_history WHERE assignment_id = ?", (assignment_id,))
             con.execute("DELETE FROM assignments WHERE assignment_id = ?", (assignment_id,))
             con.commit()
@@ -347,3 +354,285 @@ def test_admin_data_upload():
         with db_session() as con:
             con.execute("DELETE FROM projects WHERE project_id = ?", ("TEST-PYTEST-UPLOAD-001",))
             con.commit()
+
+
+def test_approval_chain_full_flow():
+    """#14: under_review -> pending_approval (auditor) -> completed/revision_requested (regional_supervisor)
+    auditor เปลี่ยนตรง under_review -> completed เองไม่ได้แล้ว (ต้องผ่านผู้บังคับบัญชา)"""
+    from src.database import db_session
+
+    auditor_headers = {"X-Username": "auditor1"}
+    analyst_headers = {"X-Username": "analyst1"}
+    supervisor_headers = {"X-Username": "supervisor1"}
+
+    projects = client.get("/projects", headers=auditor_headers).json()
+    already_assigned = {
+        item["project_id"]
+        for item in client.get("/audit/assignments", headers=auditor_headers).json()
+        if item["status"] != "completed"
+    }
+    project = next(p for p in projects if p["project_id"] not in already_assigned)
+
+    analyst = client.get("/audit/assignments/assignees", headers=auditor_headers).json()[0]
+    created = client.post(
+        "/audit/assignments",
+        headers=auditor_headers,
+        json={
+            "project_id": str(project["project_id"]),
+            "assignee_id": analyst["user_id"],
+            "priority": "high",
+            "note": "ทดสอบ approval chain",
+        },
+    )
+    assert created.status_code == 201
+    assignment_id = created.json()["assignment_id"]
+
+    def set_status(headers, status, note=None):
+        payload = {"status": status}
+        if note is not None:
+            payload["note"] = note
+        return client.patch(f"/audit/assignments/{assignment_id}/status", headers=headers, json=payload)
+
+    try:
+        # เดินสถานะจนถึง under_review
+        for headers, status in [
+            (analyst_headers, "accepted"),
+            (analyst_headers, "in_progress"),
+            (analyst_headers, "ready_for_review"),
+            (auditor_headers, "under_review"),
+        ]:
+            r = set_status(headers, status)
+            assert r.status_code == 200, r.text
+            assert r.json()["status"] == status
+
+        # auditor ปิดงานเองตรงๆ ไม่ได้อีกต่อไป
+        r = set_status(auditor_headers, "completed")
+        assert r.status_code == 409
+
+        # auditor ส่งขออนุมัติได้
+        r = set_status(auditor_headers, "pending_approval")
+        assert r.status_code == 200
+        assert r.json()["status"] == "pending_approval"
+
+        # risk_analyst เปลี่ยนสถานะขั้นอนุมัติไม่ได้
+        r = set_status(analyst_headers, "completed")
+        assert r.status_code == 409
+
+        # regional_supervisor ตีกลับโดยไม่ใส่เหตุผล -> 400
+        r = set_status(supervisor_headers, "revision_requested")
+        assert r.status_code == 400
+
+        # regional_supervisor ตีกลับพร้อมเหตุผล -> ผ่าน
+        r = set_status(supervisor_headers, "revision_requested", note="เอกสารไม่ครบ กรุณาแนบสัญญาเพิ่ม")
+        assert r.status_code == 200
+        assert r.json()["status"] == "revision_requested"
+
+        # เดินสถานะกลับไป pending_approval อีกครั้งแล้วอนุมัติ
+        for headers, status in [
+            (analyst_headers, "in_progress"),
+            (analyst_headers, "ready_for_review"),
+            (auditor_headers, "under_review"),
+            (auditor_headers, "pending_approval"),
+        ]:
+            r = set_status(headers, status)
+            assert r.status_code == 200, r.text
+
+        r = set_status(supervisor_headers, "completed")
+        assert r.status_code == 200
+        assert r.json()["status"] == "completed"
+
+        history = client.get(f"/audit/assignments/{assignment_id}", headers=auditor_headers).json()
+        approver_entries = [
+            h for h in history["status_history"]
+            if h["new_status"] == "completed" and h["changed_by_username"] == "supervisor1"
+        ]
+        assert approver_entries, "ต้องมีหลักฐานผู้อนุมัติ+เวลาใน assignment_status_history"
+    finally:
+        with db_session() as con:
+            con.execute("DELETE FROM notifications WHERE ref_type = 'assignment' AND ref_id = ?", (str(assignment_id),))
+            con.execute("DELETE FROM assignment_status_history WHERE assignment_id = ?", (assignment_id,))
+            con.execute("DELETE FROM assignments WHERE assignment_id = ?", (assignment_id,))
+            con.commit()
+
+
+def test_notifications_created_on_assignment_and_read_flow():
+    """#19: POST /audit/assignments แจ้งเตือนผู้รับงาน + GET/PATCH ของตัวเองเท่านั้น"""
+    from src.database import db_session
+
+    auditor_headers = {"X-Username": "auditor1"}
+    analyst_headers = {"X-Username": "analyst1"}
+
+    projects = client.get("/projects", headers=auditor_headers).json()
+    already_assigned = {
+        item["project_id"]
+        for item in client.get("/audit/assignments", headers=auditor_headers).json()
+        if item["status"] != "completed"
+    }
+    project = next(p for p in projects if p["project_id"] not in already_assigned)
+    analyst = client.get("/audit/assignments/assignees", headers=auditor_headers).json()[0]
+
+    before = client.get("/notifications", headers=analyst_headers).json()["unread_count"]
+
+    created = client.post(
+        "/audit/assignments",
+        headers=auditor_headers,
+        json={"project_id": str(project["project_id"]), "assignee_id": analyst["user_id"],
+              "priority": "normal", "note": "ทดสอบ notification"},
+    )
+    assert created.status_code == 201
+    assignment_id = created.json()["assignment_id"]
+
+    try:
+        after = client.get("/notifications", headers=analyst_headers).json()
+        assert after["unread_count"] == before + 1
+        mine = [n for n in after["notifications"] if n["ref_type"] == "assignment" and n["ref_id"] == str(assignment_id)]
+        assert len(mine) == 1
+        notification_id = mine[0]["notification_id"]
+        assert mine[0]["read_at"] is None
+
+        # อ่านของคนอื่นไม่ได้
+        r = client.patch(f"/notifications/{notification_id}/read", headers=auditor_headers)
+        assert r.status_code == 403
+
+        # อ่านที่ไม่มีจริง -> 404
+        r = client.patch("/notifications/999999999/read", headers=analyst_headers)
+        assert r.status_code == 404
+
+        # เจ้าของอ่านได้
+        r = client.patch(f"/notifications/{notification_id}/read", headers=analyst_headers)
+        assert r.status_code == 200
+
+        after_read = client.get("/notifications", headers=analyst_headers).json()
+        assert after_read["unread_count"] == before
+    finally:
+        with db_session() as con:
+            con.execute("DELETE FROM notifications WHERE ref_type = 'assignment' AND ref_id = ?", (str(assignment_id),))
+            con.execute("DELETE FROM assignment_status_history WHERE assignment_id = ?", (assignment_id,))
+            con.execute("DELETE FROM assignments WHERE assignment_id = ?", (assignment_id,))
+            con.commit()
+
+
+def test_notify_new_high_risk_projects_diff():
+    """#19: risk-engine rerun แจ้งเตือน project_auditor เฉพาะโครงการที่เพิ่งกลาย high (ไม่ high ใน run ก่อน)"""
+    from src.database import db_session
+    from src.routers.admin import _notify_new_high_risk_projects
+
+    with db_session() as con:
+        row = con.execute("""
+            SELECT prs.project_id, p.subdistrict_id
+            FROM project_risk_scores prs
+            JOIN projects p ON p.project_id = prs.project_id
+            WHERE prs.run_id = (SELECT MAX(run_id) FROM assessment_runs)
+            ORDER BY prs.risk_score DESC LIMIT 1
+        """).fetchone()
+        project_id, subdistrict_id = row["project_id"], row["subdistrict_id"]
+
+        before_ids = {r["notification_id"] for r in con.execute(
+            "SELECT notification_id FROM notifications WHERE ref_type = 'project' AND ref_id = ?", (project_id,)
+        )}
+
+        fake_run_ids = []
+        try:
+            prev_run_id = con.execute(
+                "INSERT INTO assessment_runs (triggered_by, note) VALUES ('pytest','diff test') RETURNING run_id"
+            ).fetchone()["run_id"]
+            fake_run_ids.append(prev_run_id)
+            con.execute(
+                """INSERT INTO project_risk_scores (run_id, project_id, risk_score, risk_level, factors_triggered)
+                   VALUES (?,?,?,?,?)""",
+                (prev_run_id, project_id, 10.0, "low", 0),
+            )
+
+            new_run_id = con.execute(
+                "INSERT INTO assessment_runs (triggered_by, note) VALUES ('pytest','diff test') RETURNING run_id"
+            ).fetchone()["run_id"]
+            fake_run_ids.append(new_run_id)
+            con.execute(
+                """INSERT INTO project_risk_scores (run_id, project_id, risk_score, risk_level, factors_triggered)
+                   VALUES (?,?,?,?,?)""",
+                (new_run_id, project_id, 90.0, "high", 3),
+            )
+            con.commit()
+
+            _notify_new_high_risk_projects(con, con, new_run_id)
+            con.commit()
+
+            after_ids = {r["notification_id"] for r in con.execute(
+                "SELECT notification_id FROM notifications WHERE ref_type = 'project' AND ref_id = ?", (project_id,)
+            )}
+            new_ids = after_ids - before_ids
+            assert new_ids, "ควรมี notification ใหม่เมื่อโครงการเปลี่ยนจาก low -> high"
+
+            auditor_ids = {r["user_id"] for r in con.execute(
+                "SELECT user_id FROM users WHERE role='project_auditor' AND subdistrict_id = ?", (subdistrict_id,)
+            )}
+            placeholders = ",".join("?" * len(new_ids))
+            notified_users = {r["user_id"] for r in con.execute(
+                f"SELECT user_id FROM notifications WHERE notification_id IN ({placeholders})", list(new_ids)
+            )}
+            assert notified_users == auditor_ids
+
+            # rerun ด้วย run_id เดิม (idempotent-ish check) ไม่ควร error ซ้ำ
+            no_prev = con.execute(
+                "SELECT run_id FROM assessment_runs ORDER BY run_id ASC LIMIT 1"
+            ).fetchone()["run_id"]
+            _notify_new_high_risk_projects(con, con, no_prev)  # run แรกสุด ไม่มี run ก่อนหน้า -> ไม่ error, ไม่ notify
+            con.commit()
+        finally:
+            # ระวัง: "NOT IN (NULL)" ไม่ match อะไรเลยใน SQL — ถ้า before_ids ว่างต้องลบทั้งหมดตรงๆ
+            if before_ids:
+                placeholders = ",".join("?" * len(before_ids))
+                con.execute(
+                    f"DELETE FROM notifications WHERE ref_type = 'project' AND ref_id = ? "
+                    f"AND notification_id NOT IN ({placeholders})",
+                    [project_id] + list(before_ids),
+                )
+            else:
+                con.execute(
+                    "DELETE FROM notifications WHERE ref_type = 'project' AND ref_id = ?",
+                    (project_id,),
+                )
+            for run_id in fake_run_ids:
+                con.execute("DELETE FROM project_risk_scores WHERE run_id = ?", (run_id,))
+                con.execute("DELETE FROM assessment_runs WHERE run_id = ?", (run_id,))
+            con.commit()
+
+
+def test_public_projects_export():
+    """#21: export ข้อมูลเปิดภาครัฐ — csv/json format ถูกต้อง, format ผิด -> 400, ไม่มี field ภายในหลุด"""
+    r = client.get("/public/projects/export", params={"format": "csv"}, headers={"X-Username": "public1"})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/csv")
+    assert "attachment; filename=" in r.headers["content-disposition"]
+    header_line = r.text.lstrip("﻿").splitlines()[0]
+    assert header_line == "project_id,project_name,subdistrict,budget_year,budget_amount,risk_score,risk_level"
+    assert "evidence_text" not in r.text
+    assert "threshold_used" not in r.text
+
+    r = client.get("/public/projects/export", params={"format": "json"}, headers={"X-Username": "public1"})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/json")
+    body = r.json()
+    assert body["metadata"]["source"] == "FinRisk"
+    assert body["metadata"]["license"]
+    assert body["data"], "ต้องมีข้อมูลโครงการอย่างน้อย 1 แถว"
+    row = body["data"][0]
+    assert set(row.keys()) == {
+        "project_id", "project_name", "subdistrict", "budget_year",
+        "budget_amount", "risk_score", "risk_level",
+    }
+
+    r = client.get("/public/projects/export", params={"format": "xml"}, headers={"X-Username": "public1"})
+    assert r.status_code == 400
+
+
+def test_public_projects_export_role_gate():
+    """#21: role ที่ปกติถูก scope ตำบล (project_auditor/risk_analyst/local_executive) เข้าถึงไม่ได้
+    — endpoint นี้ไม่ผ่าน scope_subdistrict_ids จึงต้องจำกัดด้วย role แทน กันเห็นข้อมูลข้ามตำบล"""
+    for username in ("auditor1", "analyst1", "thachang_user"):
+        r = client.get("/public/projects/export", params={"format": "csv"}, headers={"X-Username": username})
+        assert r.status_code == 403, username
+
+    for username in ("admin", "supervisor1", "public1"):
+        r = client.get("/public/projects/export", params={"format": "csv"}, headers={"X-Username": username})
+        assert r.status_code == 200, username
