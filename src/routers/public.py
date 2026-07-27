@@ -11,10 +11,17 @@ from datetime import date, datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 
-from ..auth import get_current_user
+from ..auth import require_roles
 from ..database import Connection, get_db
 
 router = APIRouter(prefix="/public", tags=["public"])
+
+# เห็นทุกตำบลอยู่แล้วตาม roles.md (ไม่มี subdistrict scope) — endpoint นี้เป็น open data
+# ไม่ผ่าน scope_subdistrict_ids ตั้งใจ จึงจำกัด role ตรงนี้แทน กัน role ที่ปกติถูก scope
+# (project_auditor/risk_analyst/local_executive) เห็นข้อมูลข้ามตำบลผ่านทางอ้อม
+EXPORT_ROLES = ("admin", "regional_supervisor", "public_user")
+# อักขระที่ Excel/Sheets ตีความเป็นจุดเริ่มสูตร — ต้อง escape กัน formula injection ตอนเปิดไฟล์
+_FORMULA_PREFIXES = ("=", "+", "-", "@")
 
 EXPORT_SELECT = """
     SELECT p.project_id, p.project_name, s.name_th AS subdistrict, p.budget_year,
@@ -31,10 +38,16 @@ EXPORT_FIELDS = [
 ]
 
 
+def _csv_safe(value):
+    if isinstance(value, str) and value.startswith(_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
 @router.get("/projects/export")
 def export_projects(
     format: str = Query(...),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_roles(*EXPORT_ROLES)),
     conn: Connection = Depends(get_db),
 ):
     if format not in ("csv", "json"):
@@ -56,7 +69,7 @@ def export_projects(
         }
         return Response(
             content=json.dumps(payload, ensure_ascii=False),
-            media_type="application/json",
+            media_type="application/json; charset=utf-8",
             headers={
                 "Content-Disposition": f"attachment; filename=finrisk_projects_open_data_{filename_date}.json"
             },
@@ -65,10 +78,11 @@ def export_projects(
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=EXPORT_FIELDS)
     writer.writeheader()
-    writer.writerows(data)
+    writer.writerows({field: _csv_safe(value) for field, value in row.items()} for row in data)
     return Response(
-        content=buffer.getvalue(),
-        media_type="text/csv",
+        # ใส่ UTF-8 BOM นำหน้า กันข้อความไทย (ชื่อตำบล/โครงการ) แสดงผลเพี้ยนตอนเปิดตรงด้วย Excel
+        content="﻿" + buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
         headers={
             "Content-Disposition": f"attachment; filename=finrisk_projects_open_data_{filename_date}.csv"
         },

@@ -6,7 +6,7 @@ from .database import Connection
 def create_notification(
     conn: Connection,
     user_id: int,
-    type: str,
+    notif_type: str,
     message: str,
     ref_type: str | None = None,
     ref_id: str | None = None,
@@ -14,5 +14,5 @@ def create_notification(
     conn.execute(
         """INSERT INTO notifications (user_id, type, message, ref_type, ref_id)
            VALUES (?,?,?,?,?)""",
-        (user_id, type, message, ref_type, str(ref_id) if ref_id is not None else None),
+        (user_id, notif_type, message, ref_type, str(ref_id) if ref_id is not None else None),
     )

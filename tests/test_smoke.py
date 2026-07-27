@@ -604,7 +604,7 @@ def test_public_projects_export():
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/csv")
     assert "attachment; filename=" in r.headers["content-disposition"]
-    header_line = r.text.splitlines()[0]
+    header_line = r.text.lstrip("﻿").splitlines()[0]
     assert header_line == "project_id,project_name,subdistrict,budget_year,budget_amount,risk_score,risk_level"
     assert "evidence_text" not in r.text
     assert "threshold_used" not in r.text
@@ -624,3 +624,15 @@ def test_public_projects_export():
 
     r = client.get("/public/projects/export", params={"format": "xml"}, headers={"X-Username": "public1"})
     assert r.status_code == 400
+
+
+def test_public_projects_export_role_gate():
+    """#21: role ที่ปกติถูก scope ตำบล (project_auditor/risk_analyst/local_executive) เข้าถึงไม่ได้
+    — endpoint นี้ไม่ผ่าน scope_subdistrict_ids จึงต้องจำกัดด้วย role แทน กันเห็นข้อมูลข้ามตำบล"""
+    for username in ("auditor1", "analyst1", "thachang_user"):
+        r = client.get("/public/projects/export", params={"format": "csv"}, headers={"X-Username": username})
+        assert r.status_code == 403, username
+
+    for username in ("admin", "supervisor1", "public1"):
+        r = client.get("/public/projects/export", params={"format": "csv"}, headers={"X-Username": username})
+        assert r.status_code == 200, username
