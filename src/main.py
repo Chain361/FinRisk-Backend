@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .audit_log import record_access, should_log
 from .config import API_TITLE, API_VERSION, CORS_ORIGINS, JWT_ALGORITHM, JWT_SECRET, JWT_SECRET_DEFAULT
 from .database import _connect
-from .routers import admin, audit, auth, documents, financials, legal, projects, risk, subdistricts
+from .routers import admin, audit, auth, documents, financials, legal, projects, risk, subdistricts, users
 
 log = logging.getLogger("finrisk.main")
 if JWT_SECRET == JWT_SECRET_DEFAULT:
@@ -77,6 +77,7 @@ app.include_router(risk.router)
 app.include_router(audit.router)
 app.include_router(financials.router)
 app.include_router(admin.router)
+app.include_router(users.router)
 # ชั้นกฎหมาย + ชั้นเอกสาร (legal linkage) — endpoint เดิมไม่ถูกแตะ
 app.include_router(legal.router)
 app.include_router(legal.project_router)

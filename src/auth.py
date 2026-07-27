@@ -51,8 +51,8 @@ def create_access_token(user: dict) -> str:
 
 def verify_login(conn: Connection, username: str, password: str) -> dict | None:
     row = conn.execute(
-        "SELECT user_id, username, display_name, role, subdistrict_id, password_hash "
-        "FROM users WHERE username = ?",
+        "SELECT user_id, username, display_name, role, subdistrict_id, status, allowed_features, "
+        "password_hash FROM users WHERE username = ?",
         (username,),
     ).fetchone()
     if row is None or not verify_password(password, row["password_hash"]):
@@ -64,14 +64,16 @@ def verify_login(conn: Connection, username: str, password: str) -> dict | None:
 
 def _user_by_id(conn: Connection, user_id: int):
     return conn.execute(
-        "SELECT user_id, username, display_name, role, subdistrict_id FROM users WHERE user_id = ?",
+        "SELECT user_id, username, display_name, role, subdistrict_id, status, allowed_features "
+        "FROM users WHERE user_id = ?",
         (user_id,),
     ).fetchone()
 
 
 def _user_by_username(conn: Connection, username: str):
     return conn.execute(
-        "SELECT user_id, username, display_name, role, subdistrict_id FROM users WHERE username = ?",
+        "SELECT user_id, username, display_name, role, subdistrict_id, status, allowed_features "
+        "FROM users WHERE username = ?",
         (username,),
     ).fetchone()
 

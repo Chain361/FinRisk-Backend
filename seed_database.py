@@ -75,6 +75,8 @@ CREATE TABLE users (
     display_name   TEXT,
     role           TEXT NOT NULL REFERENCES roles(role_code),
     subdistrict_id INTEGER REFERENCES subdistricts(subdistrict_id),
+    status           TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
+    allowed_features TEXT[] NOT NULL DEFAULT '{}',
     created_at     TEXT DEFAULT (now_text())
 );
 

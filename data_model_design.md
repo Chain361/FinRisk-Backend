@@ -109,9 +109,14 @@ CREATE TABLE users (
     display_name   TEXT,
     role           TEXT NOT NULL REFERENCES roles(role_code),
     subdistrict_id INTEGER REFERENCES subdistricts(subdistrict_id),  -- NULL สำหรับ role ที่เห็นทุกตำบล
+    status           TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
+    allowed_features TEXT[] NOT NULL DEFAULT '{}',                  -- feature flag รายผู้ใช้ (ดู UserUpdate.ALLOWED_FEATURES)
     created_at     TEXT DEFAULT (now_text())
 );
 ```
+
+`GET /users` / `PUT /users/{user_id}` (admin เท่านั้น — ดู `src/routers/users.py`) จัดการ `status`/`allowed_features`
+เหล่านี้ ไม่แตะ login/JWT — endpoint auth เดิมยังอ่านคอลัมน์เท่าเดิม
 
 Role ทั้ง 6 (5 role จาก `roles.md` + `admin` สำหรับดูแลระบบ):
 
