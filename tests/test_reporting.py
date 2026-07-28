@@ -60,7 +60,10 @@ def _delete_report(report_id: int) -> None:
 
 
 def test_risk_register_export_is_xlsx_and_scoped():
-    response = client.get("/risk/register/export?format=xlsx", headers={"X-Username": "thachang_user"})
+    response = client.get(
+        "/risk/register/export?format=xlsx",
+        headers={"X-Username": "thachang_user", "Origin": "http://localhost:4200"},
+    )
     assert response.status_code == 200
     assert response.headers["content-type"].startswith(
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -69,6 +72,7 @@ def test_risk_register_export_is_xlsx_and_scoped():
         r"attachment; filename=finrisk_risk_register_thachang_\d{8}_\d{6}\.xlsx$",
         response.headers["content-disposition"],
     )
+    assert "content-disposition" in response.headers["access-control-expose-headers"].lower()
     workbook = zipfile.ZipFile(io.BytesIO(response.content))
     assert "xl/worksheets/sheet1.xml" in workbook.namelist()
 

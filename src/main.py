@@ -141,6 +141,9 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Browser จะอ่าน response header นอก CORS safelist ไม่ได้ถ้าไม่ expose ไว้
+    # frontend ต้องใช้ชื่อไฟล์จาก Content-Disposition แทน fallback name ตอนดาวน์โหลด export
+    expose_headers=["Content-Disposition"],
 )
 
 app.include_router(auth.router)
