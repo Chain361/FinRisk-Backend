@@ -25,6 +25,7 @@ from .config import (
     PINECONE_API_KEY,
 )
 from .database import _connect
+from .error_log import record_error_debug
 from .routers import (
     admin,
     audit,
@@ -81,8 +82,35 @@ def _username_for_log(request: Request) -> str | None:
 @app.middleware("http")
 async def access_log_middleware(request: Request, call_next):
     """บันทึกการเข้าถึงของผู้ใช้ที่ login แล้ว (accountability trail) — best-effort ไม่ทำให้ request พัง"""
-    response = await call_next(request)
     username = _username_for_log(request)
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        record_error_debug(
+            level="error",
+            logger_name="finrisk.request",
+            message=str(exc),
+            method=request.method,
+            path=request.url.path,
+            status_code=500,
+            username=username,
+            request_id=request.headers.get("x-request-id"),
+            exc=exc,
+            connect=_connect,
+        )
+        raise
+    if response.status_code >= 500:
+        record_error_debug(
+            level="error",
+            logger_name="finrisk.request",
+            message=f"HTTP {response.status_code} response",
+            method=request.method,
+            path=request.url.path,
+            status_code=response.status_code,
+            username=username,
+            request_id=request.headers.get("x-request-id"),
+            connect=_connect,
+        )
     if username and should_log(request.method, request.url.path):
         forwarded = request.headers.get("x-forwarded-for")
         ip = forwarded.split(",")[0].strip() if forwarded else (

@@ -8,6 +8,7 @@ router ได้โดยไม่ก็อป SQL ซ้ำ (ตาม pattern 
 import sqlite3
 
 from ..database import rows_to_dicts
+from ..privacy import mask_project_for_public
 from .common import NotFoundError, ForbiddenError, latest_run_id
 
 
@@ -67,7 +68,13 @@ def project_summary_view(conn: sqlite3.Connection, project_id: str, user: dict) 
     # import ในฟังก์ชันเพื่อเลี่ยง circular import (auth → database → services)
     from ..auth import scope_subdistrict_ids
 
-    p = conn.execute("SELECT * FROM projects WHERE project_id = ?", (project_id,)).fetchone()
+    p = conn.execute(
+        """SELECT p.*, v.name AS vendor_name, v.tin AS vendor_tin, v.tin_masked AS vendor_tin_masked
+           FROM projects p
+           LEFT JOIN vendors v ON v.vendor_id = p.vendor_id
+           WHERE p.project_id = ?""",
+        (project_id,),
+    ).fetchone()
     if p is None:
         raise NotFoundError("ไม่พบโครงการ")
 
@@ -91,8 +98,12 @@ def project_summary_view(conn: sqlite3.Connection, project_id: str, user: dict) 
         (project_id, run_id),
     ).fetchall()
 
+    project = dict(p)
+    if user.get("role") == "public_user":
+        project = mask_project_for_public(project)
+
     return {
-        "project": dict(p),
+        "project": project,
         "risk_score": dict(score) if score else None,
         "risk_factors": rows_to_dicts(factors),
     }

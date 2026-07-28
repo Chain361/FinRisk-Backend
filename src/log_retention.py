@@ -12,6 +12,7 @@ from .database import Connection, rows_to_dicts
 
 DEFAULT_HOT_DAYS = 90
 DEFAULT_ARCHIVE_DAYS = 365
+DEFAULT_ERROR_DEBUG_DAYS = 30
 
 
 RETENTION_DDL = """
@@ -51,13 +52,39 @@ CREATE TABLE IF NOT EXISTS log_retention_runs (
     run_at        TEXT NOT NULL DEFAULT (now_text()),
     hot_days      INTEGER NOT NULL,
     archive_days  INTEGER NOT NULL,
+    error_debug_days INTEGER NOT NULL DEFAULT 30,
     archived_count INTEGER NOT NULL,
     deleted_count  INTEGER NOT NULL,
+    error_debug_deleted_count INTEGER NOT NULL DEFAULT 0,
     archive_cutoff TEXT NOT NULL,
     delete_cutoff  TEXT NOT NULL,
     triggered_by   TEXT,
     note           TEXT
 );
+
+CREATE TABLE IF NOT EXISTS error_debug_log (
+    log_id        INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    level         TEXT NOT NULL CHECK (level IN ('debug','info','warning','error','critical')),
+    logger_name   TEXT,
+    message       TEXT NOT NULL,
+    error_type    TEXT,
+    method        TEXT,
+    path          TEXT,
+    status_code   INTEGER,
+    username      TEXT,
+    request_id    TEXT,
+    stack_hash    TEXT,
+    created_at    TEXT NOT NULL DEFAULT (now_text())
+);
+CREATE INDEX IF NOT EXISTS idx_error_debug_log_time
+    ON error_debug_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_error_debug_log_level_time
+    ON error_debug_log(level, created_at);
+
+ALTER TABLE log_retention_runs
+    ADD COLUMN IF NOT EXISTS error_debug_days INTEGER NOT NULL DEFAULT 30;
+ALTER TABLE log_retention_runs
+    ADD COLUMN IF NOT EXISTS error_debug_deleted_count INTEGER NOT NULL DEFAULT 0;
 """
 
 
@@ -86,15 +113,20 @@ def ensure_log_retention_schema(conn: Connection) -> None:
         ) from exc
 
 
-def get_retention_policy(conn: Connection) -> tuple[int, int]:
+def get_retention_policy(conn: Connection) -> tuple[int, int, int]:
     rows = conn.execute(
         """SELECT key, value FROM app_config
-           WHERE key IN ('log_retention_hot_days', 'log_retention_archive_days')"""
+           WHERE key IN (
+               'log_retention_hot_days',
+               'log_retention_archive_days',
+               'error_debug_log_hot_days'
+           )"""
     ).fetchall()
     config = {row["key"]: row["value"] for row in rows}
     hot_days = int(config.get("log_retention_hot_days", DEFAULT_HOT_DAYS))
     archive_days = int(config.get("log_retention_archive_days", DEFAULT_ARCHIVE_DAYS))
-    return hot_days, archive_days
+    error_debug_days = int(config.get("error_debug_log_hot_days", DEFAULT_ERROR_DEBUG_DAYS))
+    return hot_days, archive_days, error_debug_days
 
 
 def run_access_log_retention(
@@ -103,18 +135,23 @@ def run_access_log_retention(
     triggered_by: str | None = None,
     hot_days: int | None = None,
     archive_days: int | None = None,
+    error_debug_days: int | None = None,
     now: datetime | None = None,
 ) -> dict:
     ensure_log_retention_schema(conn)
-    default_hot_days, default_archive_days = get_retention_policy(conn)
+    default_hot_days, default_archive_days, default_error_debug_days = get_retention_policy(conn)
     hot_days = hot_days if hot_days is not None else default_hot_days
     archive_days = archive_days if archive_days is not None else default_archive_days
+    error_debug_days = error_debug_days if error_debug_days is not None else default_error_debug_days
     if hot_days > archive_days:
         raise ValueError("hot_days must be less than or equal to archive_days")
+    if error_debug_days > hot_days:
+        raise ValueError("error_debug_days must be less than or equal to hot_days")
     now = now or datetime.now(timezone.utc)
 
     archive_cutoff = _utc_text(now - timedelta(days=hot_days))
     delete_cutoff = _utc_text(now - timedelta(days=archive_days))
+    error_debug_cutoff = _utc_text(now - timedelta(days=error_debug_days))
     delete_after = _utc_text(now + timedelta(days=max(archive_days - hot_days, 0)))
 
     rows = conn.execute(
@@ -172,21 +209,29 @@ def run_access_log_retention(
         (delete_cutoff,),
     ).fetchall()
 
+    error_debug_deleted_rows = conn.execute(
+        "DELETE FROM error_debug_log WHERE created_at < ? RETURNING log_id",
+        (error_debug_cutoff,),
+    ).fetchall()
+
     run = conn.execute(
         """INSERT INTO log_retention_runs
-           (hot_days, archive_days, archived_count, deleted_count,
+           (hot_days, archive_days, error_debug_days,
+            archived_count, deleted_count, error_debug_deleted_count,
             archive_cutoff, delete_cutoff, triggered_by, note)
-           VALUES (?,?,?,?,?,?,?,?)
+           VALUES (?,?,?,?,?,?,?,?,?,?)
            RETURNING run_id, run_at""",
         (
             hot_days,
             archive_days,
+            error_debug_days,
             len(archived_ids),
             len(deleted_rows),
+            len(error_debug_deleted_rows),
             archive_cutoff,
             delete_cutoff,
             triggered_by,
-            "access_log retention: hot archive delete policy",
+            "log retention: access archive/delete and error/debug delete policy",
         ),
     ).fetchone()
 
@@ -195,10 +240,13 @@ def run_access_log_retention(
         "run_at": run["run_at"],
         "hot_days": hot_days,
         "archive_days": archive_days,
+        "error_debug_days": error_debug_days,
         "archive_cutoff": archive_cutoff,
         "delete_cutoff": delete_cutoff,
+        "error_debug_cutoff": error_debug_cutoff,
         "archived_count": len(archived_ids),
         "deleted_count": len(deleted_rows),
+        "error_debug_deleted_count": len(error_debug_deleted_rows),
     }
 
 
