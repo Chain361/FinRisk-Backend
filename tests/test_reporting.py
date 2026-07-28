@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Regression tests for audit-report and risk-register exports."""
 import io
+import re
 import zipfile
 
 from fastapi.testclient import TestClient
@@ -64,7 +65,10 @@ def test_risk_register_export_is_xlsx_and_scoped():
     assert response.headers["content-type"].startswith(
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-    assert "attachment; filename=finrisk_risk_register_" in response.headers["content-disposition"]
+    assert re.search(
+        r"attachment; filename=finrisk_risk_register_thachang_\d{8}_\d{6}\.xlsx$",
+        response.headers["content-disposition"],
+    )
     workbook = zipfile.ZipFile(io.BytesIO(response.content))
     assert "xl/worksheets/sheet1.xml" in workbook.namelist()
 
@@ -85,6 +89,13 @@ def test_risk_register_export_is_xlsx_and_scoped():
     invalid = client.get("/risk/register/export?format=pdf", headers={"X-Username": "thachang_user"})
     assert invalid.status_code == 400
 
+    all_subdistricts = client.get("/risk/register/export?format=xlsx", headers={"X-Username": "admin"})
+    assert all_subdistricts.status_code == 200
+    assert re.search(
+        r"attachment; filename=finrisk_risk_register_all_subdistricts_\d{8}_\d{6}\.xlsx$",
+        all_subdistricts.headers["content-disposition"],
+    )
+
 
 def test_audit_report_export_formats_and_scope():
     report_id = _create_report_for_subdistrict(1)
@@ -93,11 +104,19 @@ def test_audit_report_export_formats_and_scope():
         assert pdf.status_code == 200
         assert pdf.headers["content-type"].startswith("application/pdf")
         assert pdf.content.startswith(b"%PDF")
+        assert re.search(
+            rf"attachment; filename=finrisk_audit_report_[a-z0-9_-]+_thachang_{report_id}\.pdf$",
+            pdf.headers["content-disposition"],
+        )
 
         xlsx = client.get(f"/audit/reports/{report_id}/export?format=xlsx", headers={"X-Username": "auditor1"})
         assert xlsx.status_code == 200
         assert xlsx.headers["content-type"].startswith(
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        assert re.search(
+            rf"attachment; filename=finrisk_audit_report_[a-z0-9_-]+_thachang_{report_id}\.xlsx$",
+            xlsx.headers["content-disposition"],
         )
         assert "xl/worksheets/sheet1.xml" in zipfile.ZipFile(io.BytesIO(xlsx.content)).namelist()
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import io
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -34,6 +35,11 @@ _THAI_MONTHS = (
     "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
     "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม",
 )
+_SUBDISTRICT_SLUGS = {
+    "ท่าช้าง": "thachang",
+    "ปิงโค้ง": "pingkhong",
+    "โยนก": "yonok",
+}
 
 
 def _font_name() -> str:
@@ -51,6 +57,32 @@ def _excel_safe(value):
 
 def _as_dict(row) -> dict:
     return dict(row) if row is not None else {}
+
+
+def _filename_token(value: str, fallback: str) -> str:
+    """สร้าง token แบบ ASCII ที่ปลอดภัยกับชื่อไฟล์ทุกระบบปฏิบัติการ."""
+    token = re.sub(r"[^A-Za-z0-9_-]+", "-", str(value).strip()).strip("-_")
+    return token.lower() or fallback
+
+
+def _subdistrict_slug(name: str | None) -> str:
+    if name in _SUBDISTRICT_SLUGS:
+        return _SUBDISTRICT_SLUGS[name]
+    return _filename_token(name or "", "unknown_subdistrict")
+
+
+def risk_register_filename(rows: list[dict], generated_at: datetime) -> str:
+    """ตั้งชื่อทะเบียนตามตำบลที่อยู่ในไฟล์ หรือ all_subdistricts เมื่อมีหลายตำบล."""
+    subdistricts = {row.get("subdistrict") for row in rows if row.get("subdistrict")}
+    scope = _subdistrict_slug(next(iter(subdistricts))) if len(subdistricts) == 1 else "all_subdistricts"
+    return f"finrisk_risk_register_{scope}_{generated_at:%Y%m%d_%H%M%S}.xlsx"
+
+
+def audit_report_filename(data: dict, extension: str) -> str:
+    """ตั้งชื่อรายงานด้วย project_id, ตำบล และ report_id ที่อ้างอิงกลับได้แน่นอน."""
+    project_id = _filename_token(data["project_id"], "project")
+    subdistrict = _subdistrict_slug(data.get("subdistrict"))
+    return f"finrisk_audit_report_{project_id}_{subdistrict}_{data['report_id']}.{extension}"
 
 
 def _thai_date(value: str | None) -> str:

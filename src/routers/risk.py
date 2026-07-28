@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """/risk — ผลการประเมินความเสี่ยง (project + annual) และรายการ risk factor"""
-from datetime import date
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 
 from ..auth import get_current_user, scope_subdistrict_ids
 from ..database import Connection, get_db, rows_to_dicts
-from ..services.reporting import build_risk_register_xlsx, risk_register_rows
+from ..services.reporting import build_risk_register_xlsx, risk_register_filename, risk_register_rows
 
 router = APIRouter(prefix="/risk", tags=["risk"])
 
@@ -102,8 +102,10 @@ def export_risk_register(
     """ส่งออกทะเบียนความเสี่ยงของรอบประเมินล่าสุดตาม scope ของผู้ใช้."""
     if format != "xlsx":
         raise HTTPException(status_code=400, detail="format ต้องเป็น xlsx เท่านั้น")
-    content = build_risk_register_xlsx(risk_register_rows(conn, user))
-    filename = f"finrisk_risk_register_{date.today().isoformat()}.xlsx"
+    generated_at = datetime.now()
+    rows = risk_register_rows(conn, user)
+    content = build_risk_register_xlsx(rows, generated_at)
+    filename = risk_register_filename(rows, generated_at)
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
