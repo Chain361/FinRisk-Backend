@@ -7,6 +7,7 @@ main.py — FastAPI application entry point
 เปิด docs อัตโนมัติที่ http://127.0.0.1:8000/docs
 """
 import logging
+import os
 
 import jwt
 from fastapi import FastAPI, Request
@@ -41,6 +42,13 @@ from .routers import (
 
 log = logging.getLogger("finrisk.main")
 if JWT_SECRET == JWT_SECRET_DEFAULT:
+    if os.getenv("VERCEL_ENV") == "production":
+        # Vercel ตั้ง VERCEL_ENV=production เองตอน deploy จริง (ต่างจาก preview/development)
+        # — fail-fast ตรงนี้กันไม่ให้ deploy ขึ้น prod โดยลืมตั้ง JWT_SECRET แล้วรันเงียบๆ ด้วยค่าที่รู้กันอยู่แล้ว
+        raise RuntimeError(
+            "JWT_SECRET ยังเป็นค่า default ที่ไม่ปลอดภัย แต่รันอยู่บน production (VERCEL_ENV=production) — "
+            "ต้องตั้ง env var JWT_SECRET เป็นค่าสุ่มยาวๆ ก่อน deploy"
+        )
     log.warning(
         "JWT_SECRET ยังเป็นค่า default ที่ไม่ปลอดภัย — ตั้ง env var JWT_SECRET เป็นค่าสุ่มยาวๆ ก่อนขึ้น production"
     )

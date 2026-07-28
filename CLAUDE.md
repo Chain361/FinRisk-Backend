@@ -95,7 +95,8 @@ function-calling เท่านั้น การ์ดสิทธิ์จ�
 - `/auth/login` ออก **JWT access token** (HS256, อายุ `JWT_EXPIRE_MINUTES` ค่า default 480 นาที)
   endpoint ที่ต้อง auth อ่าน token จาก header `Authorization: Bearer <token>`
 - ⚠️ **`JWT_SECRET`**: ต้องตั้ง env var เป็นค่าสุ่มยาวๆ ก่อนขึ้น production — ถ้ายังใช้ default
-  จะมี warning log ตอน startup (`src/main.py`)
+  จะมี warning log ตอน startup (`src/main.py`); ถ้า `VERCEL_ENV=production` ด้วย จะ **fail-fast**
+  (raise `RuntimeError` ตอน import) แทนที่จะรันเงียบๆ ด้วย secret ที่รู้กันอยู่แล้ว
 - ⚠️ **ช่วงเปลี่ยนผ่าน**: `get_current_user` ยังรับ header `X-Username` แบบเดิม (ไม่ verify ลายเซ็น)
   เป็น fallback เพราะ frontend ที่ deploy อยู่ยังส่ง header นี้อยู่ — ลบ fallback นี้ทิ้งได้เมื่อ
   frontend เปลี่ยนไปส่ง `Authorization: Bearer` ครบแล้ว (ดู FinRisk-Frontend issue #28)
