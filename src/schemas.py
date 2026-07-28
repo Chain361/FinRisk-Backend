@@ -64,6 +64,7 @@ AssignmentStatus = Literal[
     "clarification_needed",
     "ready_for_review",
     "under_review",
+    "pending_approval",
     "revision_requested",
     "completed",
 ]
