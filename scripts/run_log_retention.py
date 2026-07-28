@@ -37,6 +37,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Override log_retention_archive_days for this run.",
     )
+    parser.add_argument(
+        "--error-debug-days",
+        type=int,
+        default=None,
+        help="Override error_debug_log_hot_days for this run.",
+    )
     return parser.parse_args()
 
 
@@ -48,6 +54,7 @@ def main() -> int:
             triggered_by=args.triggered_by,
             hot_days=args.hot_days,
             archive_days=args.archive_days,
+            error_debug_days=args.error_debug_days,
         )
         conn.commit()
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))

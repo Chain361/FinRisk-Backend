@@ -441,6 +441,10 @@ def test_admin_log_retention_archives_deletes_and_respects_hold():
         "pytest_retention_delete",
         "pytest_retention_hold",
     )
+    error_messages = (
+        "pytest old error token=secret123456789 person@example.com 1234567890123",
+        "pytest recent error token=secret123456789 person@example.com 1234567890123",
+    )
     with db_session() as con:
         try:
             ensure_log_retention_schema(con)
@@ -470,6 +474,8 @@ def test_admin_log_retention_archives_deletes_and_respects_hold():
                 f"DELETE FROM access_log_archive WHERE username IN ({placeholders})",
                 list(usernames),
             )
+            for message in error_messages:
+                con.execute("DELETE FROM error_debug_log WHERE message LIKE ?", (f"%{message[:18]}%",))
             for username, created_at in [
                 ("pytest_retention_archive", archive_time),
                 ("pytest_retention_delete", delete_time),
@@ -485,6 +491,22 @@ def test_admin_log_retention_archives_deletes_and_respects_hold():
                     (username, f"/projects/{username}", created_at),
                 ).fetchone()
                 log_ids.append(row["log_id"])
+            con.execute(
+                """INSERT INTO error_debug_log
+                   (level, logger_name, message, error_type, method, path,
+                    status_code, username, created_at)
+                   VALUES ('error', 'pytest', ?, 'ValueError', 'GET',
+                           '/projects/pytest-old-error', 500, 'admin', ?)""",
+                (error_messages[0], (now - timedelta(days=45)).strftime("%Y-%m-%d %H:%M:%S")),
+            )
+            con.execute(
+                """INSERT INTO error_debug_log
+                   (level, logger_name, message, error_type, method, path,
+                    status_code, username, created_at)
+                   VALUES ('error', 'pytest', ?, 'ValueError', 'GET',
+                           '/projects/pytest-recent-error', 500, 'admin', ?)""",
+                (error_messages[1], (now - timedelta(days=5)).strftime("%Y-%m-%d %H:%M:%S")),
+            )
             con.commit()
 
         hold = client.post(
@@ -506,8 +528,10 @@ def test_admin_log_retention_archives_deletes_and_respects_hold():
         body = run.json()
         assert body["hot_days"] == 90
         assert body["archive_days"] == 365
+        assert body["error_debug_days"] == 30
         assert body["archived_count"] >= 3
         assert body["deleted_count"] >= 1
+        assert body["error_debug_deleted_count"] >= 1
 
         archived = client.get(
             "/audit/access-log/archive",
@@ -541,6 +565,12 @@ def test_admin_log_retention_archives_deletes_and_respects_hold():
                 log_ids,
             ).fetchone()[0]
             assert remaining_hot == 0
+            error_rows = con.execute(
+                """SELECT message FROM error_debug_log
+                   WHERE message IN (?, ?) ORDER BY message""",
+                error_messages,
+            ).fetchall()
+            assert [row["message"] for row in error_rows] == [error_messages[1]]
     finally:
         with db_session() as con:
             if log_ids:
@@ -551,6 +581,8 @@ def test_admin_log_retention_archives_deletes_and_respects_hold():
                     log_ids,
                 )
                 con.execute(f"DELETE FROM access_log WHERE log_id IN ({placeholders})", log_ids)
+            for message in error_messages:
+                con.execute("DELETE FROM error_debug_log WHERE message = ?", (message,))
             con.commit()
 
 

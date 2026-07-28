@@ -204,10 +204,13 @@ class LogRetentionRunOut(BaseModel):
     run_at: str
     hot_days: int
     archive_days: int
+    error_debug_days: int
     archive_cutoff: str
     delete_cutoff: str
+    error_debug_cutoff: str
     archived_count: int
     deleted_count: int
+    error_debug_deleted_count: int
 
 
 class AccessLogHoldIn(BaseModel):

@@ -35,6 +35,7 @@ def run_log_retention(
     conn: Connection = Depends(get_db),
     hot_days: int | None = Query(default=None, ge=1, le=3650),
     archive_days: int | None = Query(default=None, ge=1, le=3650),
+    error_debug_days: int | None = Query(default=None, ge=1, le=3650),
 ):
     """Archive old access logs and delete expired archive rows unless they are on hold."""
     if hot_days is not None and archive_days is not None and hot_days > archive_days:
@@ -45,6 +46,7 @@ def run_log_retention(
             triggered_by=user["username"],
             hot_days=hot_days,
             archive_days=archive_days,
+            error_debug_days=error_debug_days,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

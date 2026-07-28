@@ -221,6 +221,21 @@ def test_access_log_resource_mapping():
     )
 
 
+def test_error_debug_log_sanitizes_sensitive_text():
+    from src.error_log import sanitize_log_text
+
+    sanitized = sanitize_log_text(
+        "failed password=secret123 token=abc person@example.com tin 1234567890123"
+    )
+    assert "secret123" not in sanitized
+    assert "abc" not in sanitized
+    assert "person@example.com" not in sanitized
+    assert "1234567890123" not in sanitized
+    assert "[EMAIL]" in sanitized
+    assert "[NUMBER]" in sanitized
+    assert "[MASKED]" in sanitized
+
+
 def test_existing_project_endpoint_untouched():
     """endpoint เดิมต้องไม่เปลี่ยน shape (legal linkage เป็น layer เสริม)"""
     body = client.get(f"/projects/{MOCK_FULL}", headers=ADMIN).json()

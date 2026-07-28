@@ -498,16 +498,35 @@ CREATE TABLE log_retention_runs (
     run_at        TEXT NOT NULL DEFAULT (now_text()),
     hot_days      INTEGER NOT NULL,
     archive_days  INTEGER NOT NULL,
+    error_debug_days INTEGER NOT NULL DEFAULT 30,
     archived_count INTEGER NOT NULL,
     deleted_count  INTEGER NOT NULL,
+    error_debug_deleted_count INTEGER NOT NULL DEFAULT 0,
     archive_cutoff TEXT NOT NULL,
     delete_cutoff  TEXT NOT NULL,
     triggered_by   TEXT,
     note           TEXT
 );
+
+CREATE TABLE error_debug_log (
+    log_id        INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    level         TEXT NOT NULL CHECK (level IN ('debug','info','warning','error','critical')),
+    logger_name   TEXT,
+    message       TEXT NOT NULL,       -- masked/truncated; no request body/query string
+    error_type    TEXT,
+    method        TEXT,
+    path          TEXT,                -- request.url.path เท่านั้น ไม่เก็บ query string
+    status_code   INTEGER,
+    username      TEXT,
+    request_id    TEXT,
+    stack_hash    TEXT,
+    created_at    TEXT NOT NULL DEFAULT (now_text())
+);
 ```
 
 **API:** `POST /admin/log-retention/run` รัน archive/delete ตาม policy, `POST /admin/log-retention/holds` ตั้ง hold, และ `GET /audit/access-log/archive` อ่าน archive ที่ถูกบีบอัดแล้วโดย decode เป็น JSON ให้ admin. สำหรับ DB ที่มีข้อมูลเดิมให้รัน `migrations/20260728_log_retention.sql` ด้วย role ที่มีสิทธิ์ create table/index แทนการ seed ใหม่ทั้งฐาน.
+
+**Error/debug log:** `src/main.py` บันทึก exception และ HTTP 5xx ลง `error_debug_log` แบบ best-effort โดยไม่เก็บ request body หรือ query string; `src/error_log.py` mask email, token/secret-like text, และตัวเลขยาวก่อน insert. retention job ลบ error/debug log หลัง `error_debug_log_hot_days` (default 30 วัน) โดยไม่ archive เพื่อลดความเสี่ยง PII.
 
 **Scheduled job:** `.github/workflows/log-retention.yml` รัน `python scripts/run_log_retention.py --triggered-by github-actions` อัตโนมัติทุกวันเวลา 01:30 Asia/Bangkok (18:30 UTC) และรองรับ `workflow_dispatch` เพื่อกดรันเองได้. ต้องตั้ง repository secret ชื่อ `DATABASE_URL` ให้ชี้ production/shared DB; scheduled workflows จะเริ่มทำงานจาก default branch หลัง merge.
 

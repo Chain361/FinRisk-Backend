@@ -374,13 +374,34 @@ CREATE TABLE log_retention_runs (
     run_at        TEXT NOT NULL DEFAULT (now_text()),
     hot_days      INTEGER NOT NULL,
     archive_days  INTEGER NOT NULL,
+    error_debug_days INTEGER NOT NULL DEFAULT 30,
     archived_count INTEGER NOT NULL,
     deleted_count  INTEGER NOT NULL,
+    error_debug_deleted_count INTEGER NOT NULL DEFAULT 0,
     archive_cutoff TEXT NOT NULL,
     delete_cutoff  TEXT NOT NULL,
     triggered_by   TEXT,
     note           TEXT
 );
+
+CREATE TABLE error_debug_log (
+    log_id        INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    level         TEXT NOT NULL CHECK (level IN ('debug','info','warning','error','critical')),
+    logger_name   TEXT,
+    message       TEXT NOT NULL,
+    error_type    TEXT,
+    method        TEXT,
+    path          TEXT,
+    status_code   INTEGER,
+    username      TEXT,
+    request_id    TEXT,
+    stack_hash    TEXT,
+    created_at    TEXT NOT NULL DEFAULT (now_text())
+);
+CREATE INDEX idx_error_debug_log_time
+    ON error_debug_log(created_at);
+CREATE INDEX idx_error_debug_log_level_time
+    ON error_debug_log(level, created_at);
 
 -- ===========================================================================
 -- Legal Linkage + Document Intelligence (docs/legal_linkage_plan.md §2)

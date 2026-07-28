@@ -110,6 +110,15 @@ uvicorn src.main:app --reload
 
 Access/security audit logs use the 90/365 day policy in `app_config`:
 `log_retention_hot_days = 90` and `log_retention_archive_days = 365`.
+Error/debug logs use `error_debug_log_hot_days = 30`; the app stores only masked,
+truncated error metadata in `error_debug_log` and does not archive it.
+
+Existing DB migration order:
+
+```bash
+psql "$DATABASE_URL" -f migrations/20260728_log_retention.sql
+psql "$DATABASE_URL" -f migrations/20260728_error_debug_log_retention.sql
+```
 
 Manual run:
 
@@ -193,7 +202,8 @@ data_modelling/
 อนุมัติขั้นสุดท้ายโดย `regional_supervisor`), `assignment_status_history`, `auditor_feedback`
 (CRUD + resolve workflow ใช้งานจริงแล้ว), `notifications` (bell icon ฝั่ง frontend),
 `access_log` (accountability trail, admin ดูได้ที่ `GET /audit/access-log`)
-และ log retention tables (`access_log_archive`, `access_log_holds`, `log_retention_runs`)
+และ log retention tables (`access_log_archive`, `access_log_holds`, `log_retention_runs`,
+`error_debug_log`)
 สำหรับ archive/delete ตาม policy 90/365 วัน
 > `audit_reports` มีอยู่ใน schema แต่ไม่มีโค้ดใดอ้างอิงถึงแล้ว — ถูกแทนที่ด้วย `auditor_feedback`
 > เก็บไว้เป็น legacy ยังไม่ได้ลบ

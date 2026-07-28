@@ -199,12 +199,28 @@ erDiagram
         text run_at
         int hot_days
         int archive_days
+        int error_debug_days
         int archived_count
         int deleted_count
+        int error_debug_deleted_count
         text archive_cutoff
         text delete_cutoff
         text triggered_by
         text note
+    }
+    error_debug_log {
+        int log_id PK
+        text level
+        text logger_name
+        text message
+        text error_type
+        text method
+        text path
+        int status_code
+        text username
+        text request_id
+        text stack_hash
+        text created_at
     }
     notifications {
         int notification_id PK
