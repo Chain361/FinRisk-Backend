@@ -30,6 +30,13 @@ python -m scripts.ingest_documents --project MOCK-CON-001             # upsert P
 python -m scripts.calibrate_rag                                       # หาค่า RAG_MIN_SCORE จาก chunk จริง
 curl -H "Authorization: Bearer <token>" \
   "http://127.0.0.1:8000/projects/MOCK-CON-001/documents/search?q=Factor%20F&min_score=0"  # smoke test RAG
+
+# ชั้น observability/eval (LangSmith) — ไม่บังคับ ไม่ตั้ง LANGSMITH_TRACING = ปิดสนิท ระบบทำงานปกติ
+python -m evals.datasets_io                          # sync evals/datasets/*.jsonl ขึ้น LangSmith (idempotent)
+python -m evals.run_chatbot_eval --suite security    # ชุดสำคัญสุด — scope guard + prompt injection
+python -m evals.run_chatbot_eval --local             # debug evaluator โดยไม่ส่งขึ้น cloud
+python -m evals.run_retrieval_eval --dump            # พิมพ์ chunk ให้คน label qrels
+python -m evals.run_retrieval_eval --sweep           # หา RAG_MIN_SCORE ด้วยข้อมูลจริง (แทนค่าเดา)
 ```
 
 ไม่มี `.env` หรือไม่ได้ตั้ง `DATABASE_URL` → fallback เป็น postgres ในเครื่องตัวเอง
@@ -41,7 +48,13 @@ curl -H "Authorization: Bearer <token>" \
 ลำดับความสำคัญ: **env จาก shell/Vercel ชนะ `.env` เสมอ** (ใช้ `os.environ.setdefault`)
 ใส่คีย์ใหม่ที่ `.env` ได้เลย ไม่ต้อง export เอง — `.env` อยู่ใน `.gitignore` ห้าม commit
 คีย์ที่ใช้: `DATABASE_URL`, `JWT_SECRET`, `GEMINI_API_KEY`, `PINECONE_API_KEY`, `TYPHOON_OCR_API_KEY`,
-`RAG_TOP_K`, `RAG_MIN_SCORE`, `RAG_MAX_CHUNK_TOKENS`
+`RAG_TOP_K`, `RAG_MIN_SCORE`, `RAG_MAX_CHUNK_TOKENS`,
+`LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`
+
+⚠️ **`LANGSMITH_TRACING=true` = prompt, ผล tool (ชื่อโครงการ/ผู้ชนะ/งบประมาณ) และเนื้อความเอกสาร
+ปร.4/5/6 ถูกส่งขึ้น LangSmith cloud** — ตอนนี้เปิดได้เพราะยังใช้ข้อมูล mock
+(`docs/langsmith_eval_plan.md` §7 ทางเลือก A) **ก่อนใช้กับข้อมูลจริงต้องทบทวนใหม่**
+(ปิด flag / `LANGSMITH_HIDE_INPUTS` / self-hosted) มี warning log ตอน startup ให้เห็นเสมอว่าเปิดอยู่
 
 ## สถาปัตยกรรม
 
@@ -76,6 +89,17 @@ curl -H "Authorization: Bearer <token>" \
   ก่อนคืนผล ใช้โดย `GET /projects/{id}/documents/search` และ tool ตัวที่ 6 ของ chatbot
   `PINECONE_API_KEY` จำเป็นต้องระบุ หากไม่มีจะ raise RuntimeError ตอนเริ่มระบบ (`src/main.py`)
 - `scripts/calibrate_rag.py` — offline CLI หาค่า `RAG_MIN_SCORE` (อ่านอย่างเดียว ไม่แก้ไฟล์ใด)
+- `src/observability.py` — ชั้นห่อ LangSmith **แบบ optional**: ไม่ลง `langsmith` หรือไม่ตั้ง
+  `LANGSMITH_TRACING=true` → `traceable()` คืนฟังก์ชันเดิมตรงๆ และ `wrap_gemini()` คืน client เดิม
+  (pattern เดียวกับ `retrieval.rag_enabled()` — feature flag ต้องปิดได้จริง)
+  **ห้าม `import langsmith` ที่อื่นนอกจากไฟล์นี้กับ `evals/`** ไม่งั้น optional dependency
+  จะกลายเป็น dependency บังคับโดยไม่ตั้งใจ
+  ⚠️ ทุกจุดที่ห่อฟังก์ชันซึ่งรับ `conn`/`user` **ต้องส่ง `process_inputs=`** เสมอ —
+  `conn` (psycopg Connection) serialize ไม่ได้ และ `user` มี `username`/`display_name`
+  ของเจ้าหน้าที่ซึ่งห้ามออกนอกระบบ (ใช้ `redact_*` ที่มีให้แล้ว)
+- `evals/` — ชุดวัดคุณภาพชั้น AI (dataset jsonl + evaluator + runner) **ไม่ถูก collect โดย
+  `pytest -q`** เพราะยิง Gemini/Pinecone จริง — ส่วนที่เป็น logic ล้วนมีเทสต์อยู่ที่
+  `tests/test_observability_evals.py` ตามปกติ ดู `evals/README.md`
 
 **Data flow:** CSV (`standardized_data/`) → `seed_database.py` เขียนลง PostgreSQL (ตาม `DATABASE_URL`)
 → risk engine ใน seed คำนวณและเขียนตาราง `*_risk_results` / `project_risk_scores`
@@ -143,6 +167,8 @@ function-calling เท่านั้น การ์ดสิทธิ์จ�
 - `pytest -q` ผ่าน (เพิ่มเทสต์ใน `tests/` เมื่อเพิ่ม endpoint) — ต้องมี postgres รันอยู่ + สร้าง
   `finrisk_dev` แล้ว seed ไว้ก่อน
 - ถ้าแก้ schema DB ต้องอัปเดตทั้ง `seed_database.py`, `data_model_design.md`, และ ERD
+- ถ้าแตะชั้น AI (chatbot/retrieval): `pytest -q` ต้องผ่าน **ทั้งตอนที่ลง `langsmith` แล้วและยังไม่ลง**
+  และปิด `LANGSMITH_TRACING` แล้วพฤติกรรมต้องเหมือนเดิม 100%
 
 ## สิ่งที่ยังไม่ทำ
 
@@ -154,6 +180,9 @@ function-calling เท่านั้น การ์ดสิทธิ์จ�
 - ชั้น RAG ต่อครบแล้ว (ingest → retrieval → endpoint → tool ตัวที่ 6 → citations + เทสต์)
   **เหลือ 2 อย่าง**: (1) calibrate `RAG_MIN_SCORE` — ค่า 0.82 ที่ใช้อยู่ยังเป็นค่าเดา
   ต้องรัน `python -m scripts.calibrate_rag` ในเครื่องที่ต่อ Pinecone ได้แล้วตั้งค่าใน `.env`
+  (ทางเลือกที่ให้หลักฐานดีกว่า: `python -m evals.run_retrieval_eval --sweep` ซึ่งเทียบ
+  recall/precision ที่ threshold หลายค่าบน qrels — แต่ต้อง label `relevant_chunk_ids`
+  ใน `evals/datasets/retrieval_qrels.jsonl` ก่อน ตอนนี้ยังว่างทั้งหมด)
   (2) ตั้ง env บน Vercel ซึ่งติด blocker ข้อแรกอยู่ — ดู `docs/rag_pinecone_plan.md` §0.1
 - ถ้า ingest รอบใหม่ได้ chunk **น้อยลง**กว่ารอบก่อน record เบอร์ท้ายๆ ของรอบเก่าจะค้างบน Pinecone
   (post-verify กรองไม่ออกเพราะ `project_id`/`doc_type_code` ยังถูกต้อง — จะโผล่มาเป็น chunk เก่า)
@@ -169,3 +198,11 @@ function-calling เท่านั้น การ์ดสิทธิ์จ�
   `MAX_TOOL_TURNS=5` รอบ เสี่ยง cost ของ Gemini API บานถ้ามีคนยิงรัว (issue #32)
 - log retention (archive/delete `access_log` ตามอายุ) — ยังไม่มีโค้ด/migration ใดๆ บน `main`
   เลย เป็น backlog ล้วนๆ (issue #28)
+- ชั้น LangSmith: ทำแล้วเฉพาะ **tracing + metric ที่เป็น deterministic (M1–M4)**
+  เหลือ (1) label `relevant_chunk_ids` ใน `evals/datasets/retrieval_qrels.jsonl` (ยังว่างทั้งหมด
+  → metric ชั้น retrieval ยังไม่มีความหมายจนกว่าจะ label) (2) evaluator ที่ใช้ LLM-as-judge
+  M5–M7 (computable=0 wording / groundedness / empty-result honesty) (3) ต่อ eval เข้า CI
+  ดู `docs/langsmith_eval_plan.md` §0 ตารางสถานะ
+- ยังไม่มี `langchain` ใน repo โดยตั้งใจ — LangSmith ไม่ต้องใช้ LangChain ถ้าจะเพิ่มภายหลัง
+  ต้องอ่านข้อห้ามในแผน §5 ก่อน (โดยเฉพาะ: **ห้ามใช้ agent executor ที่ execute tool เอง**
+  เพราะ `_execute_tool` ต้องเป็นทางผ่านเดียวที่มี scope guard)

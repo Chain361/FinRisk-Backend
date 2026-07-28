@@ -13,6 +13,14 @@ pinecone>=9,<10         # vector search เนื้อหาเอกสาร�
                         # ⚠️ SDK 9 คืน hit เป็น msgspec Struct (.id/.score/.fields) ไม่ใช่ dict คีย์ '_id'/'_score'
                         #    แบบ SDK 7/8 — src/services/retrieval.py::_normalize_hit รองรับทั้งสองแบบไว้แล้ว
 
+# Observability / evaluation — LangSmith (ดู docs/langsmith_eval_plan.md)
+# ⚠️ เป็น optional dependency จริงๆ: ไม่ลงก็รันระบบได้ครบ (src/observability.py ทำ decorator
+#    ให้เป็น no-op) และ `pytest -q` ผ่านทั้งสองแบบ — อย่าเขียนโค้ดที่ import langsmith ตรงๆ
+#    นอก src/observability.py กับ evals/
+# ⚠️ LangSmith ไม่ต้องใช้ LangChain — repo นี้จึงไม่มี langchain/langgraph เป็น dependency
+#    (ถ้าจะเพิ่มภายหลัง ดูเงื่อนไขในแผน §5 ก่อน — มีข้อห้ามเรื่อง agent executor)
+langsmith>=0.3.4      # >=0.3.4 เพราะรองรับ extra [pytest]; wrappers.wrap_gemini ยังเป็น beta
+
 # Dev / test
 httpx==0.28.*         # ใช้โดย fastapi.testclient (ปรับจาก 0.27 — google-genai บังคับ >=0.28)
 pytest==8.*

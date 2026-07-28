@@ -25,6 +25,7 @@ from .config import (
     PINECONE_API_KEY,
 )
 from .database import _connect
+from .observability import enabled as tracing_enabled
 from .routers import (
     admin,
     audit,
@@ -56,10 +57,15 @@ if JWT_SECRET == JWT_SECRET_DEFAULT:
 if not GEMINI_API_KEY:
     log.warning("GEMINI_API_KEY ยังไม่ได้ตั้งค่า — POST /chatbot จะตอบ 503 จนกว่าจะตั้ง env var นี้")
 if not PINECONE_API_KEY:
-    # feature flag: ไม่มีคีย์ = ไม่ประกาศ tool ค้นเอกสารให้ Gemini เลย (ระบบเดิม tool 5 ตัวทำงานครบ)
+    raise RuntimeError(
+        "PINECONE_API_KEY ยังไม่ได้ตั้งค่า — ต้องกำหนด env var PINECONE_API_KEY ใน .env หรือ environment ก่อนเริ่มใช้งานระบบ"
+    )
+if tracing_enabled():
+    # ⚠️ เตือนดังๆ ตอน startup: เปิดแล้ว prompt + ผล tool + เนื้อความเอกสาร ถูกส่งออกนอกระบบ
+    # ยอมรับได้ตอนนี้เพราะยังเป็นข้อมูล mock (docs/langsmith_eval_plan.md §7 ทางเลือก A)
     log.warning(
-        "PINECONE_API_KEY ยังไม่ได้ตั้งค่า — chatbot จะไม่มี tool ค้นเนื้อหาเอกสารเต็ม "
-        "และ GET /projects/{id}/documents/search จะตอบ 503"
+        "LangSmith tracing เปิดอยู่ (LANGSMITH_TRACING=true) — prompt, ผล tool "
+        "และเนื้อความเอกสารจะถูกส่งขึ้น LangSmith cloud ห้ามเปิดกับข้อมูลจริงโดยไม่ทบทวน"
     )
 
 app = FastAPI(title=API_TITLE, version=API_VERSION)

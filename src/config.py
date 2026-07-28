@@ -67,6 +67,15 @@ PINECONE_NAMESPACE = os.getenv("PINECONE_NAMESPACE", "pr-documents")
 PINECONE_TEXT_FIELD = os.getenv("PINECONE_TEXT_FIELD", "text")  # ต้องตรงกับ field map ของ index
 PINECONE_EMBED_MODEL = os.getenv("PINECONE_EMBED_MODEL", "multilingual-e5-large")  # ใช้ตอนนับ token เท่านั้น
 
+# LangSmith — tracing/evaluation ของชั้น AI (ดู docs/langsmith_eval_plan.md)
+# ⚠️ เปิด tracing = prompt, ผล tool (ชื่อโครงการ/ผู้ชนะ/งบ) และเนื้อความเอกสาร ปร.4/5/6
+#    ถูกส่งขึ้น LangSmith cloud — ตอนนี้ตั้งใจเปิดเพราะยังเป็นข้อมูล mock (แผน §7 ทางเลือก A)
+#    ก่อนขึ้น production กับข้อมูลจริงต้องทบทวนใหม่ (ปิด flag / hide inputs / self-hosted)
+# ⚠️ ไม่มีคีย์ = ปิดสนิท ไม่ใช่ error — src/observability.py ทำ decorator ให้เป็น no-op
+LANGSMITH_TRACING = os.getenv("LANGSMITH_TRACING", "").strip().lower() in ("1", "true", "yes")
+LANGSMITH_API_KEY = os.getenv("LANGSMITH_API_KEY", "")
+LANGSMITH_PROJECT = os.getenv("LANGSMITH_PROJECT", "finrisk-dev")
+
 RAG_TOP_K = int(os.getenv("RAG_TOP_K", "6"))
 # ⚠️ e5 เทรนแบบ contrastive → คู่ข้อความที่ไม่เกี่ยวกันเลยก็ได้ราว 0.70–0.78
 #    ตั้งต่ำกว่านี้เท่ากับไม่กรอง ต้อง calibrate กับ chunk จริงอีกที (แผน §6.1, งาน #4.5)

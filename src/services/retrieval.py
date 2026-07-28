@@ -19,6 +19,7 @@ retrieval.py (service) — ค้นเนื้อหาเอกสารเ�
 """
 import logging
 
+from .. import observability as obs
 from ..config import (
     PINECONE_API_KEY,
     PINECONE_INDEX,
@@ -93,6 +94,9 @@ def _index():
     return _INDEX
 
 
+@obs.traceable(
+    run_type="retriever", name="pinecone.search", process_outputs=obs.shape_retriever_outputs
+)
 def _vector_search(query: str, top_k: int, flt: dict | None) -> list[dict]:
     """ยิง Pinecone จริง — แยกออกมาเพื่อ monkeypatch ในเทสต์ (pattern เดียวกับ chatbot._call_gemini)"""
     response = _index().search(
@@ -108,6 +112,12 @@ def _vector_search(query: str, top_k: int, flt: dict | None) -> list[dict]:
 # ──────────────────────────────────────────────────────────────────────────────
 # post-verify (ชั้น 2) — Postgres เป็น authority ของ "สิทธิ์" เสมอ
 # ──────────────────────────────────────────────────────────────────────────────
+@obs.traceable(
+    run_type="tool",
+    name="postgres.post_verify",
+    process_inputs=obs.redact_verify_inputs,
+    process_outputs=obs.shape_verify_outputs,
+)
 def _verify_and_enrich(conn, keys: set[tuple[str, str]]) -> dict[tuple[str, str], dict]:
     """(project_id, doc_type_code) → {doc_no, subdistrict_id} ตามที่ Postgres บอก ณ ตอนนี้
 
@@ -136,6 +146,9 @@ def _verify_and_enrich(conn, keys: set[tuple[str, str]]) -> dict[tuple[str, str]
     }
 
 
+@obs.traceable(
+    run_type="chain", name="search_document_text", process_inputs=obs.redact_search_inputs
+)
 def search_document_text(
     conn,
     user: dict,

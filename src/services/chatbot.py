@@ -15,6 +15,7 @@ import sqlite3
 from google import genai
 from google.genai import errors, types
 
+from .. import observability as obs
 from ..config import GEMINI_API_KEY, GEMINI_MODEL
 from . import documents as documents_service
 from . import legal as legal_service
@@ -186,6 +187,7 @@ TOOL_DISPATCH = {
 }
 
 
+@obs.traceable(run_type="tool", name="tool", process_inputs=obs.redact_tool_inputs)
 def _execute_tool(conn: sqlite3.Connection, user: dict, name: str, args: dict) -> dict:
     """dispatch tool เดียว — ไม่ raise ออกไปหา LLM (แปลง domain error เป็น {"error": ...} แทน)"""
     handler = TOOL_DISPATCH.get(name)
@@ -237,11 +239,17 @@ def _history_to_contents(history: list[dict]) -> list[types.Content]:
 def _call_gemini(
     contents: list[types.Content], config: types.GenerateContentConfig
 ) -> types.GenerateContentResponse:
-    """แยกออกมาต่างหากเพื่อ monkeypatch ในเทสต์ได้ (ไม่ยิง Gemini API จริงใน pytest)"""
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    """แยกออกมาต่างหากเพื่อ monkeypatch ในเทสต์ได้ (ไม่ยิง Gemini API จริงใน pytest)
+
+    `obs.wrap_gemini` เป็น no-op เมื่อปิด tracing → พฤติกรรมเดิมทุกประการ
+    """
+    client = obs.wrap_gemini(genai.Client(api_key=GEMINI_API_KEY))
     return client.models.generate_content(model=GEMINI_MODEL, contents=contents, config=config)
 
 
+@obs.traceable(
+    run_type="chain", name="chatbot.handle_message", process_inputs=obs.redact_chat_inputs
+)
 def handle_message(conn: sqlite3.Connection, user: dict, message: str, history: list[dict]) -> dict:
     """คืน {"reply": str, "tool_calls": [...], "citations": [...]}
 
