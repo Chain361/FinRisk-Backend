@@ -91,6 +91,27 @@ def test_chatbot_gives_up_after_max_turns(monkeypatch):
     assert len(body["tool_calls"]) == chatbot_service.MAX_TOOL_TURNS
 
 
+def test_chatbot_rate_limit_429_then_ok_for_other_user(monkeypatch):
+    """เกิน limit -> 429 (พร้อมข้อความภาษาไทย), ไม่เกิน -> ปกติ, limit แยกตาม user (issue #32)"""
+    from src.rate_limit import SlidingWindowRateLimiter
+    from src.routers import chatbot as chatbot_router
+
+    monkeypatch.setattr(chatbot_router, "_rate_limiter", SlidingWindowRateLimiter(max_requests=2, window_seconds=60))
+    monkeypatch.setattr(chatbot_service, "GEMINI_API_KEY", "dummy-key-for-test")
+    monkeypatch.setattr(chatbot_service, "_call_gemini", lambda contents, config: _fake_response([_text_part("ok")]))
+
+    for _ in range(2):
+        r = client.post("/chatbot", json={"message": "สวัสดี"}, headers=AUDITOR1)
+        assert r.status_code == 200, r.text
+
+    r_over = client.post("/chatbot", json={"message": "สวัสดี"}, headers=AUDITOR1)
+    assert r_over.status_code == 429
+    assert "จำกัด" in r_over.json()["detail"]
+
+    r_other_user = client.post("/chatbot", json={"message": "สวัสดี"}, headers=ANALYST1)
+    assert r_other_user.status_code == 200, r_other_user.text
+
+
 def test_execute_tool_scope_guard_blocks_cross_subdistrict_access():
     """หัวใจของ guardrail: ต่อให้ LLM ขอ project_id นอกตำบล tool ต้องคืน error ไม่ใช่ข้อมูลจริง"""
     with db_session() as conn:
