@@ -8,6 +8,9 @@ seed_database.py — Local Budget Fraud Risk Assistant
 วิธีรัน (ต้องมีไฟล์ CSV อยู่โฟลเดอร์เดียวกับ script + ตั้ง DATABASE_URL ชี้ postgres ที่ว่างอยู่):
     python seed_database.py                      # สร้าง schema + seed
     python seed_database.py --force               # ลบตารางเดิมทั้งหมดแล้วสร้างใหม่
+    python seed_database.py --if-missing           # seed เฉพาะตอนยังไม่มี schema, ถ้ามีแล้วข้ามเฉยๆ
+                                                    # (ไม่ error, ไม่ลบข้อมูล) — ใช้เป็น buildCommand
+                                                    # บน Vercel กัน deploy ลบข้อมูล prod ทุกครั้ง
 
 Input:
     projects_ALL_master.csv           (97 แถว → 96 โครงการหลัง dedup)
@@ -1760,6 +1763,12 @@ def _tables_exist(cur) -> bool:
 def main():
     ap = argparse.ArgumentParser(description="สร้าง schema + seed + รัน risk engine ลง PostgreSQL")
     ap.add_argument("--force", action="store_true", help="ลบตารางเดิมทั้งหมดก่อนสร้างใหม่")
+    ap.add_argument(
+        "--if-missing",
+        action="store_true",
+        help="ถ้ามี schema อยู่แล้วให้ข้ามแบบสำเร็จ (ไม่ error, ไม่ลบข้อมูล) — ใช้กับ CI/CD "
+             "เช่น Vercel buildCommand กัน deploy ทับ/ลบข้อมูล production ทุกครั้ง",
+    )
     args = ap.parse_args()
 
     legal_files = [os.path.join(LEGAL_DIR, f) for f in
@@ -1784,6 +1793,10 @@ def main():
             cur.execute("DROP SCHEMA public CASCADE")
             cur.execute("CREATE SCHEMA public")
             con.commit()
+        elif args.if_missing:
+            print("มี schema อยู่แล้วใน DATABASE_URL นี้ — ข้าม (ไม่แตะข้อมูลเดิม)")
+            con.close()
+            sys.exit(0)
         else:
             sys.exit("มี schema เดิมอยู่แล้วใน DATABASE_URL นี้ — ใช้ --force เพื่อลบแล้วสร้างใหม่")
 

@@ -1,5 +1,5 @@
 {
-  "buildCommand": "python3 seed_database.py --force",
+  "buildCommand": "python3 seed_database.py --if-missing",
   "rewrites": [
     { "source": "/(.*)", "destination": "/api/index" }
   ]
