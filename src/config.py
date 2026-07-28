@@ -2,7 +2,9 @@
 """
 config.py — ค่าคอนฟิกกลางของ backend
 
-อ่านค่าจาก environment variable ได้ (มี default ที่รันได้ทันทีในเครื่อง dev)
+ลำดับความสำคัญของค่า: env var ที่ตั้งไว้ใน shell/แพลตฟอร์ม (เช่น Vercel) > `.env` ที่ repo root > default ในไฟล์นี้
+ไฟล์ `.env` จึงเป็น "แหล่งหลัก" ตอน dev ในเครื่อง โดยไม่บังคับให้ต้องมี (ไม่มีก็ใช้ default)
+`.env` อยู่ใน `.gitignore` — ห้าม commit คีย์ลง repo
 """
 import os
 from pathlib import Path
@@ -13,6 +15,7 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # โหลดค่าจาก .env ถ้ามี (local dev เท่านั้น — production/Vercel ไม่มีไฟล์นี้ จึงเป็น no-op)
+# python-dotenv ไม่ override env ที่ตั้งไว้แล้ว → shell/Vercel ชนะ .env เสมอ
 load_dotenv(BASE_DIR / ".env")
 
 # connection string ของ PostgreSQL (สร้าง schema + seed ด้วย seed_database.py)
@@ -53,3 +56,20 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 # Rate limit ต่อ user บน POST /chatbot (กัน cost บานจาก Gemini API — ดู issue #32)
 # นับแบบ sliding window ต่อ process เดียว (ดู src/rate_limit.py)
 CHATBOT_RATE_LIMIT_PER_MINUTE = int(os.getenv("CHATBOT_RATE_LIMIT_PER_MINUTE", "10"))
+
+# Pinecone integrated-inference index — ค้นเนื้อหาเอกสารเต็ม (ดู docs/rag_pinecone_plan.md)
+# ⚠️ PINECONE_API_KEY ว่าง = ไม่มี tool ค้นเอกสารให้ chatbot (ระบบเดิม tool 5 ตัวทำงานปกติ)
+# ⚠️ โมเดล/dimension ถูกล็อกที่ตัว index ตอนสร้าง (multilingual-e5-large, 1024, cosine)
+#    จึงไม่มี EMBED_MODEL/EMBED_DIM ที่นี่ — เปลี่ยนโมเดล = สร้าง index ใหม่ ไม่ใช่แก้ env
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "")
+PINECONE_INDEX = os.getenv("PINECONE_INDEX", "pr-documents")
+PINECONE_NAMESPACE = os.getenv("PINECONE_NAMESPACE", "pr-documents")
+PINECONE_TEXT_FIELD = os.getenv("PINECONE_TEXT_FIELD", "text")  # ต้องตรงกับ field map ของ index
+PINECONE_EMBED_MODEL = os.getenv("PINECONE_EMBED_MODEL", "multilingual-e5-large")  # ใช้ตอนนับ token เท่านั้น
+
+RAG_TOP_K = int(os.getenv("RAG_TOP_K", "6"))
+# ⚠️ e5 เทรนแบบ contrastive → คู่ข้อความที่ไม่เกี่ยวกันเลยก็ได้ราว 0.70–0.78
+#    ตั้งต่ำกว่านี้เท่ากับไม่กรอง ต้อง calibrate กับ chunk จริงอีกที (แผน §6.1, งาน #4.5)
+RAG_MIN_SCORE = float(os.getenv("RAG_MIN_SCORE", "0.82"))
+# ลิมิตจริงของ multilingual-e5-large คือ 507 token/record และ truncate ส่วนเกิน "เงียบๆ"
+RAG_MAX_CHUNK_TOKENS = int(os.getenv("RAG_MAX_CHUNK_TOKENS", "480"))

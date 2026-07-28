@@ -3,7 +3,7 @@
 chatbot.py (service) — chatbot orchestration (Gemini function-calling)
 
 ตอบคำถามของ project_auditor/risk_analyst โดยเรียก service function เดิม
-(projects/legal/documents) เป็น "tool" — ไม่เขียน SQL เอง และไม่ให้ LLM กำหนด scope เอง
+(projects/legal/documents + retrieval) เป็น "tool" — ไม่เขียน SQL เอง และไม่ให้ LLM กำหนด scope เอง
 (conn/user inject จากฝั่งเราเสมอ ผูกกับ JWT ที่ authenticate ไปแล้วตอนต้น request)
 ต่อให้ LLM พยายามขอโครงการนอกตำบล ก็โดน ForbiddenError จาก scope_subdistrict_ids
 ที่ service ชั้นล่างบังคับอยู่แล้ว — scope guard จึง deterministic ไม่พึ่ง prompt guardrail
@@ -19,6 +19,7 @@ from ..config import GEMINI_API_KEY, GEMINI_MODEL
 from . import documents as documents_service
 from . import legal as legal_service
 from . import projects as projects_service
+from . import retrieval as retrieval_service
 from .common import ForbiddenError, NotFoundError, ServiceError
 
 log = logging.getLogger("finrisk.chatbot")
@@ -40,6 +41,13 @@ SYSTEM_PROMPT = """\
 4. ถ้าเครื่องมือคืน error (เช่น ไม่พบโครงการ หรือไม่มีสิทธิ์เข้าถึง) ให้แจ้งผู้ใช้ตรงไปตรงมาว่าไม่พบ/ไม่มีสิทธิ์
    ห้ามพยายามหาทางตอบคำถามด้วยข้อมูลอื่นแทน
 5. ตอบเป็นภาษาไทย กระชับ ตรงประเด็น เหมาะกับผู้ใช้ที่เป็นเจ้าหน้าที่ราชการ
+6. ผลจาก search_document_text คือ "ข้อความที่คัดมาจากเอกสารจริง" — ตอบโดยอ้างอิงเฉพาะข้อความใน chunk
+   ที่ได้รับเท่านั้น ห้ามเติมเนื้อหาที่ไม่ได้อยู่ใน chunk และทุกครั้งที่อ้างเนื้อหาเอกสาร
+   ต้องระบุอ้างอิงถึงเอกสารและหน้าอย่างเป็นธรรมชาติ เช่น "จากเอกสาร ปร.4-เดโม-001 หน้า 1" หรือ "(เอกสาร ปร.4-เดโม-001 หน้า 1)"
+   โดยใช้ข้อมูล doc_no และ page_no ที่ได้รับจากเครื่องมือ ห้ามพิมพ์ชื่อฟิลด์ metadata หรือรูปแบบ key-value
+   (เช่น ห้ามแสดง doc_type_code:, doc_no:, page_no: ในคำตอบเด็ดขาด)
+7. ถ้า search_document_text คืนผลว่าง ให้ตอบว่าไม่พบข้อความที่เกี่ยวข้องในเอกสารที่มีในระบบ
+   ห้ามใช้ summary_text หรือความรู้ทั่วไปมาตอบแทน
 """
 
 TOOL_DECLARATIONS = [
@@ -103,7 +111,35 @@ TOOL_DECLARATIONS = [
     ),
 ]
 
-TOOL = types.Tool(function_declarations=TOOL_DECLARATIONS)
+# tool ตัวที่ 6 — ประกาศเฉพาะเมื่อเปิดใช้ RAG (ดู _tools())
+# description ที่บอก "เมื่อไรไม่ควรใช้" สำคัญพอๆ กับบอกว่าเมื่อไรควรใช้ ไม่งั้น Gemini จะเริ่มเอา RAG
+# ไปตอบคำถามที่ structured query ตอบแม่นกว่า ซึ่งเป็นการถอยหลังจากจุดแข็งเดิมของระบบ (แผน §6.5)
+SEARCH_DOC_DECLARATION = types.FunctionDeclaration(
+    name="search_document_text",
+    description=(
+        "ค้นหาข้อความจากเนื้อหาเอกสารเต็มของโครงการ (ปร.4/ปร.5/ปร.6) — ใช้เมื่อผู้ใช้ถามถึง"
+        "รายละเอียดที่อยู่ในตัวเอกสาร เช่น 'ปร.5 ระบุอะไรบ้าง' 'ในเอกสารเขียนว่าอย่างไร' "
+        "อย่าใช้เครื่องมือนี้ถามเรื่องสถานะเอกสารขาด/ไม่ขาด หรือ risk score (ใช้ get_project_documents "
+        "และ get_project แทน ซึ่งแม่นยำกว่าเพราะอ่านจากข้อมูลที่ตรวจสอบแล้ว)"
+    ),
+    parameters_json_schema={
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "ข้อความค้นหาเป็นภาษาไทย"},
+            "project_id": {"type": "string", "description": "จำกัดเฉพาะโครงการนี้ (แนะนำให้ระบุเสมอถ้ารู้)"},
+        },
+        "required": ["query"],
+    },
+)
+
+
+def _tools() -> list[types.Tool]:
+    """ประกาศ tool ตามที่เปิดใช้จริง — PINECONE_API_KEY ว่าง = Gemini ไม่เห็น tool ค้นเอกสารเลย
+    (feature flag ต้องปิดได้จริง ไม่ใช่แค่ให้ tool คืน error)"""
+    decls = list(TOOL_DECLARATIONS)
+    if retrieval_service.rag_enabled():
+        decls.append(SEARCH_DOC_DECLARATION)
+    return [types.Tool(function_declarations=decls)]
 
 
 def _tool_list_projects(conn: sqlite3.Connection, user: dict, args: dict):
@@ -133,12 +169,20 @@ def _tool_list_laws(conn: sqlite3.Connection, user: dict, args: dict):
     return legal_service.list_laws(conn)
 
 
+def _tool_search_document_text(conn: sqlite3.Connection, user: dict, args: dict):
+    """scope guard อยู่ใน service (สองชั้น) — args["project_id"] ที่ LLM ส่งมาไม่ได้ผ่อนสิทธิ์อะไรเลย"""
+    return retrieval_service.search_document_text(
+        conn, user, args["query"], project_id=args.get("project_id")
+    )
+
+
 TOOL_DISPATCH = {
     "list_projects": _tool_list_projects,
     "get_project": _tool_get_project,
     "get_project_legal": _tool_get_project_legal,
     "get_project_documents": _tool_get_project_documents,
     "list_laws": _tool_list_laws,
+    "search_document_text": _tool_search_document_text,
 }
 
 
@@ -153,7 +197,34 @@ def _execute_tool(conn: sqlite3.Connection, user: dict, name: str, args: dict) -
         return {"error": str(exc)}
     except ForbiddenError as exc:
         return {"error": str(exc)}
+    except KeyError as exc:  # LLM ส่ง args ไม่ครบตาม schema
+        return {"error": f"ขาดพารามิเตอร์ที่จำเป็น: {exc}"}
+    except ServiceError as exc:  # เช่น เรียก search_document_text ตอน PINECONE_API_KEY ว่าง
+        return {"error": str(exc)}
     return result if isinstance(result, dict) else {"result": result}
+
+
+def _collect_citations(result: dict, citations: list[dict]) -> None:
+    """เก็บ citation จากผล search_document_text (dedup) — frontend ใช้ชี้ว่าคำตอบมาจากเอกสารหน้าไหน
+
+    ระบบนี้บังคับ guardrail ว่า "ห้ามอ้างมาตราที่ไม่มีใน legal_refs" เพราะผู้ใช้ต้องเปิดเอกสารจริง
+    ไปยืนยันได้ — RAG ที่ยกข้อความมาตอบโดยไม่บอกหน้า ขัดหลักเดียวกัน (แผน §8)
+    """
+    seen = {(c["project_id"], c["doc_type_code"], c["chunk_no"]) for c in citations}
+    for chunk in result.get("chunks") or []:
+        key = (chunk.get("project_id"), chunk.get("doc_type_code"), chunk.get("chunk_no"))
+        if key in seen:
+            continue
+        seen.add(key)
+        citations.append(
+            {
+                "project_id": chunk.get("project_id"),
+                "doc_type_code": chunk.get("doc_type_code"),
+                "doc_no": chunk.get("doc_no"),
+                "page_no": chunk.get("page_no"),
+                "chunk_no": chunk.get("chunk_no"),
+            }
+        )
 
 
 def _history_to_contents(history: list[dict]) -> list[types.Content]:
@@ -172,7 +243,11 @@ def _call_gemini(
 
 
 def handle_message(conn: sqlite3.Connection, user: dict, message: str, history: list[dict]) -> dict:
-    """คืน {"reply": str, "tool_calls": [{"name": ..., "args": ...}]}"""
+    """คืน {"reply": str, "tool_calls": [...], "citations": [...]}
+
+    `citations` เป็น field ที่เพิ่มเข้ามาทีหลัง (additive — client เก่าเมินไปเฉยๆ ไม่พัง)
+    ว่างเสมอถ้าไม่ได้เรียก search_document_text
+    """
     if not GEMINI_API_KEY:
         raise ServiceError("ยังไม่ได้ตั้งค่า chatbot (GEMINI_API_KEY ว่าง)")
 
@@ -181,13 +256,14 @@ def handle_message(conn: sqlite3.Connection, user: dict, message: str, history: 
 
     config = types.GenerateContentConfig(
         system_instruction=SYSTEM_PROMPT,
-        tools=[TOOL],
+        tools=_tools(),
         # ปิด automatic function calling ของ SDK — เราคุมการ execute tool เองทุก step
         # เพื่อให้ scope guard/error handling ผ่าน _execute_tool เสมอ ไม่มีทางหลุด
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
     )
 
     tool_calls: list[dict] = []
+    citations: list[dict] = []
     for _ in range(MAX_TOOL_TURNS):
         try:
             response = _call_gemini(contents, config)
@@ -197,12 +273,16 @@ def handle_message(conn: sqlite3.Connection, user: dict, message: str, history: 
 
         candidate = response.candidates[0] if response.candidates else None
         if candidate is None or candidate.content is None or not candidate.content.parts:
-            return {"reply": FALLBACK_REPLY, "tool_calls": tool_calls}
+            return {"reply": FALLBACK_REPLY, "tool_calls": tool_calls, "citations": citations}
 
         function_calls = [p.function_call for p in candidate.content.parts if p.function_call is not None]
         if not function_calls:
             text = "".join(p.text or "" for p in candidate.content.parts if p.text)
-            return {"reply": text.strip() or FALLBACK_REPLY, "tool_calls": tool_calls}
+            return {
+                "reply": text.strip() or FALLBACK_REPLY,
+                "tool_calls": tool_calls,
+                "citations": citations,
+            }
 
         contents.append(candidate.content)  # role='model' พร้อม function_call parts
         response_parts = []
@@ -210,8 +290,10 @@ def handle_message(conn: sqlite3.Connection, user: dict, message: str, history: 
             args = dict(fc.args or {})
             result = _execute_tool(conn, user, fc.name, args)
             tool_calls.append({"name": fc.name, "args": args})
+            if fc.name == "search_document_text":
+                _collect_citations(result, citations)
             response_parts.append(types.Part.from_function_response(name=fc.name, response=result))
         contents.append(types.Content(role="user", parts=response_parts))
 
     log.warning("chatbot เกิน MAX_TOOL_TURNS (%d) — ตอบ fallback", MAX_TOOL_TURNS)
-    return {"reply": FALLBACK_REPLY, "tool_calls": tool_calls}
+    return {"reply": FALLBACK_REPLY, "tool_calls": tool_calls, "citations": citations}

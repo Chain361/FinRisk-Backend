@@ -5,3 +5,9 @@ rapidfuzz>=3.0
 
 # โหมด production (--pdf --extractor typhoon) ติดตั้งเพิ่ม:
 #   typhoon-ocr pypdf   (+ poppler-utils ในระบบ)
+# ไฟล์ภาพ (raw_documents/*.png, extractor typhoon-image) ต้องการแค่ typhoon-ocr ไม่ต้องมี pypdf/poppler
+
+# ingest RAG (scripts/ingest_documents.py) — นับ token จริงก่อน upsert ตาม docs/rag_pinecone_plan.md §6.3
+# เป็น dev/ingest dependency เท่านั้น ห้ามใส่ใน requirements.txt ของ API (ไม่ควรลากขึ้น Vercel)
+# ทางเลือกถ้าไม่อยากลง: --token-counter pinecone (นับผ่าน pc.inference.embed ตรงกับ index 100%)
+transformers>=4.40
