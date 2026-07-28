@@ -49,3 +49,7 @@ API_VERSION = "0.1.0"
 # (ดู main.py) และ POST /chatbot จะตอบ 503 จนกว่าจะตั้งค่า
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+# Rate limit ต่อ user บน POST /chatbot (กัน cost บานจาก Gemini API — ดู issue #32)
+# นับแบบ sliding window ต่อ process เดียว (ดู src/rate_limit.py)
+CHATBOT_RATE_LIMIT_PER_MINUTE = int(os.getenv("CHATBOT_RATE_LIMIT_PER_MINUTE", "10"))
