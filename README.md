@@ -118,19 +118,28 @@ data_modelling/
 │  ├─ database.py               # ตัวช่วยต่อ PostgreSQL (dependency get_db)
 │  ├─ auth.py                   # login (bcrypt + JWT) + role/scope guard
 │  ├─ schemas.py                # Pydantic models
+│  ├─ notify.py                 # create_notification() — helper insert-only ใช้โดย audit.py/admin.py
 │  ├─ services/                 # service function (contract ที่ router + chatbot ใช้ร่วมกัน)
-│  │  ├─ common.py              # scope guard + latest_run_id + domain error
+│  │  ├─ common.py              # scope guard + latest_run_id + domain error (ServiceError/NotFoundError/ForbiddenError)
+│  │  ├─ projects.py            # list_projects_view / project_summary_view
 │  │  ├─ legal.py               # ชั้นกฎหมาย (laws/sections/factor_legal_map)
-│  │  └─ documents.py           # ชั้นเอกสาร (doc types/status/missing/findings)
+│  │  ├─ documents.py           # ชั้นเอกสาร (doc types/status/missing/findings)
+│  │  ├─ users.py               # get_users / update_user (user-management)
+│  │  └─ chatbot.py             # orchestration เรียก Gemini + tool-calling (ดู docs/chatbot_architecture.md)
 │  └─ routers/                  # endpoint แยกตามโดเมน
 │     ├─ auth.py                # /auth/login, /auth/me
 │     ├─ subdistricts.py        # /subdistricts
 │     ├─ projects.py            # /projects (+ risk score ล่าสุด)
 │     ├─ risk.py                # /risk/factors, /risk/annual, /risk/summary
-│     ├─ audit.py               # /audit/assignments, /audit/feedback
+│     ├─ audit.py               # /audit/assignments (approval chain), /audit/feedback, /audit/access-log
+│     ├─ financials.py          # /financial-statements, /financials
 │     ├─ admin.py               # /admin/data/upload, /admin/risk-engine/run (admin เท่านั้น)
+│     ├─ users.py               # /users — admin จัดการ role/subdistrict/allowed_features
+│     ├─ notifications.py       # /notifications — unread count, mark-as-read
+│     ├─ public.py              # /public/projects/export — open data (CSV/JSON)
 │     ├─ legal.py               # /legal/laws, /risk/projects/{id}/legal
-│     └─ documents.py           # /documents/types, /projects/{id}/documents
+│     ├─ documents.py           # /documents/types, /projects/{id}/documents
+│     └─ chatbot.py             # /chatbot — Gemini function-calling (admin/project_auditor/risk_analyst)
 ├─ tests/
 │  ├─ test_smoke.py             # smoke test (pytest)
 │  └─ test_legal_documents.py   # เทสต์ชั้นกฎหมาย + ชั้นเอกสาร
@@ -150,23 +159,31 @@ data_modelling/
 
 ## 4. Data model โดยย่อ
 
-ฐานข้อมูล PostgreSQL เดียว (ตาม `DATABASE_URL`) 15+ ตาราง แบ่งเป็น 4 กลุ่ม:
+ฐานข้อมูล PostgreSQL เดียว (ตาม `DATABASE_URL`) 27 ตาราง แบ่งเป็น 5 กลุ่ม:
 
 **Master data** — `subdistricts` (3 ตำบล), `vendors` (57 ราย), `projects` (97 โครงการ),
-`financial_statements` (337 บรรทัดงบการเงิน), `roles` (6 บทบาท ตาม `roles.md`), `users` (8 mock users)
+`financial_statements` (337 บรรทัดงบการเงิน), `roles` (6 บทบาท ตาม `roles.md`), `users` (8 mock users
++ คอลัมน์ `allowed_features TEXT[]` — ดู §5)
 
 **Risk engine config** — `risk_factors` (8 ตัวชี้วัด), `app_config` (เกณฑ์แบ่งระดับความเสี่ยง)
 
 **Risk results** (เขียนโดย engine ทุก run) — `assessment_runs`, `project_risk_results`,
 `project_risk_scores`, `annual_risk_results`
 
-**Audit workflow** — `audit_assignments`, `audit_reports`, `auditor_feedback` (ยังว่าง รอ business logic)
+**Audit workflow + notifications** — `assignments` (approval chain: `waiting_acceptance` →
+`accepted`/`in_progress` → `ready_for_review` → `under_review` → `pending_approval` → `completed`,
+อนุมัติขั้นสุดท้ายโดย `regional_supervisor`), `assignment_status_history`, `auditor_feedback`
+(CRUD + resolve workflow ใช้งานจริงแล้ว), `notifications` (bell icon ฝั่ง frontend),
+`access_log` (accountability trail, admin ดูได้ที่ `GET /audit/access-log`)
+> `audit_reports` มีอยู่ใน schema แต่ไม่มีโค้ดใดอ้างอิงถึงแล้ว — ถูกแทนที่ด้วย `auditor_feedback`
+> เก็บไว้เป็น legacy ยังไม่ได้ลบ
 
 ดู ERD เต็มได้ที่ `data_model_erd.mermaid` และคำอธิบายทุกตาราง/คอลัมน์ที่ `data_model_design.md`
 
 **Legal linkage + document layer** (ดู `docs/legal_linkage_plan.md`) — `laws`, `law_sections`,
 `factor_legal_map`, `project_compliance`, `document_types`, `project_documents`,
-`document_findings`, `finding_legal_map`, `document_chunks`
+`document_findings`, `finding_legal_map`, `document_chunks` (คอลัมน์ `embedding` เผื่อไว้สำหรับ RAG
+ในอนาคต ปัจจุบัน chatbot ใช้ structured tool-calling ไม่ใช่ RAG — ดู `docs/chatbot_architecture.md`)
 
 ### Risk factors (11 ตัว)
 
@@ -207,6 +224,11 @@ mock users ทั้งหมดรหัสผ่านเดียวกัน
 การจำกัด scope อยู่ที่ `src/auth.py` → `scope_subdistrict_ids()` ทุก endpoint ที่คืนข้อมูลตำบล
 ต้องเรียกใช้ฟังก์ชันนี้เสมอ
 
+**`allowed_features`** — permission layer เสริมเหนือ role (คอลัมน์ `users.allowed_features TEXT[]`,
+แก้ได้ที่ `PUT /users/{user_id}` โดย admin เท่านั้น) จำกัด/เปิดความสามารถแบบ per-user ละเอียดกว่า role
+เดี่ยวๆ เช่น เปิด `chatbot` หรือ `audit_feedback` ให้ user บางคนเฉพาะ — ดู flag ทั้งหมดที่
+`src/schemas.py::ALLOWED_FEATURES` ไม่ได้แทนที่ role/scope guard ข้างต้น เป็นชั้นเสริมคนละแกน
+
 ---
 
 ## 6. ทดลองยิง API
@@ -246,6 +268,25 @@ curl -X POST http://127.0.0.1:8000/admin/data/upload \
   -F "subdistrict_id=1" \
   -F "projects_csv=@new_projects.csv;type=text/csv"
 # → รัน /admin/risk-engine/run ต่อเพื่อให้ dashboard เห็นผลข้อมูลใหม่
+```
+
+```bash
+# แจ้งเตือน — unread count + list
+curl http://127.0.0.1:8000/notifications?unread=true -H "Authorization: Bearer $TOKEN"
+
+# มอบหมายงาน/อนุมัติ (approval chain) — เปลี่ยนสถานะ assignment
+curl -X PATCH http://127.0.0.1:8000/audit/assignments/1/status \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"status":"accepted"}'
+
+# open data export — ไม่ต้อง scope guard ตำบล แต่ role-gate เฉพาะ admin/regional_supervisor/public_user
+curl "http://127.0.0.1:8000/public/projects/export?format=csv" -H "Authorization: Bearer $TOKEN"
+
+# chatbot — admin/project_auditor/risk_analyst เท่านั้น รายละเอียด orchestration/guardrail ดู
+# docs/chatbot_architecture.md (ต้องตั้ง env var GEMINI_API_KEY ก่อน ไม่งั้นได้ 503)
+curl -X POST http://127.0.0.1:8000/chatbot \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"message":"โครงการ MOCK-CON-002 ขาดเอกสารอะไรบ้าง","history":[]}'
 ```
 
 ---
@@ -301,10 +342,15 @@ cp -r ocr_pipeline/work/t67/ocr pipeline/ocr_output/thachang67
 
 ## 9. งานที่ยังต้องทำต่อ (สำหรับ dev ใหม่)
 
-- deploy จริง: ต้อง provision PostgreSQL แบบ persistent (เช่น Neon/Supabase/RDS) แล้วตั้ง
-  `DATABASE_URL` บน Vercel — ยังไม่ได้ provision
 - `/audit/feedback`: filter สถานะ `draft` ให้เห็นเฉพาะเจ้าของ และเพิ่ม scope guard ให้
-  `GET /audit/feedback/{project_id}` (ตอนนี้ยังไม่กรองตำบล)
+  `GET /audit/feedback/{project_id}` (ตอนนี้ยังไม่กรองตำบล — ดู `src/routers/audit.py`,
+  issue backend #30) `audit.py` ยังไม่มี service layer เลย (SQL ตรงในราวเตอร์ทั้งไฟล์)
+  ควร extract ตาม pattern ของ `services/projects.py`/`services/legal.py` ไปพร้อมกัน
+- `JWT_SECRET` default (`dev-only-insecure-secret-change-before-production`) แค่ warn ตอน
+  startup ไม่ fail-fast — ถ้าลืมตั้ง env var ตอน deploy production จะรันต่อได้ปกติ (issue #31)
 - ต่อ OCR จริงเข้าชั้นเอกสาร (ตอนนี้ `project_documents`/`document_findings` เป็น `source='mock'`
   ทั้งหมด) — ก่อนให้ finding จาก OCR/LLM ขยับ risk score ต้องเพิ่ม review gate ให้คนยืนยันก่อน
 - curate mapping กฎหมายของ A2/A3 (ตอนนี้ยังไม่มี → chatbot ตอบ "ยังไม่มีการเชื่อมโยงข้อกฎหมาย")
+- `POST /chatbot` ยังไม่มี rate limit ต่อ user — เสี่ยง cost บานถ้ามีคนยิงรัว (issue #32)
+- log retention policy (archive/delete ตามอายุ `access_log`) ยังไม่มีโค้ด/migration ใดๆ ในนี้เลย
+  (backlog, issue #28)
