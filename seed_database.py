@@ -1594,6 +1594,40 @@ def seed_assignments(cur):
 
 
 # ---------------------------------------------------------------------------
+# Reporting demo data
+# ---------------------------------------------------------------------------
+
+def seed_audit_reports(cur):
+    """สร้างรายงานผลตรวจตัวอย่างเพื่อให้ endpoint export ใช้งานได้ทันทีหลัง seed."""
+    assignments = cur.execute(
+        """SELECT a.assignment_id, p.project_name
+           FROM assignments a
+           JOIN projects p ON p.project_id = a.project_id
+           ORDER BY a.assignment_id"""
+    ).fetchall()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for assignment in assignments:
+        cur.execute(
+            """INSERT INTO audit_reports
+               (assignment_id, work_process, objective, likelihood, impact, impact_score,
+                risk_level, findings, submitted_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                assignment["assignment_id"],
+                "การจัดซื้อจัดจ้างและการบริหารสัญญา",
+                f"ตรวจสอบความคุ้มค่า ความโปร่งใส และการปฏิบัติตามระเบียบของ {assignment['project_name']}",
+                3,
+                4,
+                4,
+                4,
+                "สรุปผลจากข้อมูลความเสี่ยงและข้อสังเกตที่ผู้ตรวจสอบบันทึกไว้",
+                now,
+            ),
+        )
+    log(f"audit reports (demo): {len(assignments)} รายการ")
+
+
+# ---------------------------------------------------------------------------
 # 7. Validation (§9.5 + §11.5)
 # ---------------------------------------------------------------------------
 
@@ -1850,6 +1884,7 @@ def main():
     run_annual_engine(cur, run_id)
     seed_auditor_feedback(cur)  # หลัง engine — เลือกโครงการจาก risk score จริง
     seed_assignments(cur)       # หลัง engine — เลือกโครงการจาก risk score จริงเหมือนกัน
+    seed_audit_reports(cur)
     con.commit()
 
     print("[5/5] Validation (§9.5)")

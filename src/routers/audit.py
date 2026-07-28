@@ -10,6 +10,8 @@ from ..auth import require_roles, scope_subdistrict_ids
 from ..database import Connection, SqliteLikeRow, get_db, rows_to_dicts
 from ..log_retention import list_archived_access_logs
 from ..notify import create_notification
+from ..services.common import ForbiddenError, NotFoundError
+from ..services.reporting import audit_report_data, build_audit_report_pdf, build_audit_report_xlsx
 from ..schemas import (
     AssignmentCreate,
     AssignmentStatusUpdate,
@@ -27,6 +29,7 @@ router = APIRouter(prefix="/audit", tags=["audit"])
 FEEDBACK_ROLES = ("admin", "regional_supervisor", "local_executive", "project_auditor", "risk_analyst")
 # roles ที่ปิดเรื่อง (resolve) ได้ — ผู้ตรวจสอบ/แอดมินเท่านั้น ตรงกับ canResolveFeedback ฝั่ง frontend
 RESOLVE_ROLES = ("admin", "project_auditor")
+REPORT_EXPORT_ROLES = ("admin", "regional_supervisor", "local_executive", "project_auditor", "risk_analyst")
 
 
 def _now_str() -> str:
@@ -53,6 +56,39 @@ def _fetch_feedback(conn: Connection, feedback_id: int) -> dict:
     if row is None:
         raise HTTPException(status_code=404, detail="ไม่พบความคิดเห็น")
     return _serialize_feedback(row)
+
+
+@router.get("/reports/{report_id}/export")
+def export_audit_report(
+    report_id: int,
+    format: str = Query("pdf"),
+    user: dict = Depends(require_roles(*REPORT_EXPORT_ROLES)),
+    conn: Connection = Depends(get_db),
+):
+    """ดาวน์โหลดรายงานผลตรวจแบบ PDF หรือ Excel โดยตรวจ scope ของโครงการก่อนเสมอ."""
+    if format not in ("pdf", "xlsx"):
+        raise HTTPException(status_code=400, detail="format ต้องเป็น pdf หรือ xlsx")
+    try:
+        data = audit_report_data(conn, report_id, user)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ForbiddenError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    safe_project = quote(data["project_id"], safe="")
+    if format == "pdf":
+        content = build_audit_report_pdf(data)
+        media_type = "application/pdf"
+        filename = f"finrisk_audit_report_{safe_project}_{report_id}.pdf"
+    else:
+        content = build_audit_report_xlsx(data)
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        filename = f"finrisk_audit_report_{safe_project}_{report_id}.xlsx"
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
 
 
 ASSIGNMENT_STATUSES = {
