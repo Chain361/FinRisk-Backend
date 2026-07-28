@@ -348,13 +348,14 @@ def list_feedback(
     """feedback ทั้งหมดที่ user เห็นได้ (scope ตามตำบลเหมือน /projects) — ใช้แสดงสถานะบนรายการโครงการ
     โดยไม่ต้องยิง request แยกทีละโครงการ"""
     allowed = scope_subdistrict_ids(conn, user)
-    where_sql = ""
-    params: list = []
+    where_clauses = ["(f.status != 'draft' OR f.user_id = ?)"]
+    params: list = [user["user_id"]]
     if allowed is not None:
         if not allowed:
             return []
-        where_sql = f"WHERE p.subdistrict_id IN ({','.join('?' * len(allowed))})"
-        params = list(allowed)
+        where_clauses.append(f"p.subdistrict_id IN ({','.join('?' * len(allowed))})")
+        params.extend(allowed)
+    where_sql = "WHERE " + " AND ".join(where_clauses)
 
     rows = conn.execute(
         f"""SELECT f.*, u.username AS auditor_username, u.display_name AS auditor_name
@@ -371,14 +372,16 @@ def list_feedback(
 @router.get("/feedback/{project_id}")
 def project_feedback(
     project_id: str,
-    _: dict = Depends(require_roles("admin", "regional_supervisor", "local_executive", "project_auditor", "risk_analyst")),
+    user: dict = Depends(require_roles("admin", "regional_supervisor", "local_executive", "project_auditor", "risk_analyst")),
     conn: Connection = Depends(get_db),
 ):
+    _project_in_scope(conn, project_id, user)
     rows = conn.execute(
         """SELECT f.*, u.username AS auditor_username, u.display_name AS auditor_name
            FROM auditor_feedback f JOIN users u ON u.user_id = f.user_id
-           WHERE f.project_id = ? ORDER BY f.updated_at DESC""",
-        (project_id,),
+           WHERE f.project_id = ? AND (f.status != 'draft' OR f.user_id = ?)
+           ORDER BY f.updated_at DESC""",
+        (project_id, user["user_id"]),
     ).fetchall()
     return [_serialize_feedback(r) for r in rows]
 
