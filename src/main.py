@@ -36,6 +36,7 @@ from .routers import (
     public,
     risk,
     subdistricts,
+    users,
 )
 
 log = logging.getLogger("finrisk.main")
@@ -100,6 +101,7 @@ app.include_router(risk.router)
 app.include_router(audit.router)
 app.include_router(financials.router)
 app.include_router(admin.router)
+app.include_router(users.router)
 app.include_router(notifications.router)
 app.include_router(public.router)
 # ชั้นกฎหมาย + ชั้นเอกสาร (legal linkage) — endpoint เดิมไม่ถูกแตะ

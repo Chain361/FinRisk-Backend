@@ -21,6 +21,10 @@ class ForbiddenError(ServiceError):
     pass
 
 
+class ValidationError(ServiceError):
+    pass
+
+
 def latest_run_id(conn: sqlite3.Connection) -> int | None:
     row = conn.execute(
         "SELECT run_id FROM assessment_runs ORDER BY run_id DESC LIMIT 1"

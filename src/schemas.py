@@ -7,7 +7,26 @@ schemas.py — Pydantic models (request/response)
 """
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+# feature flag ที่แจกจ่ายได้ผ่าน allowed_features — สอดคล้องกับ "Permissions" ต่อ role ใน roles.md
+# (ใช้จำกัดสิทธิ์ย่อยรายคน นอกเหนือจาก role เดิม) แก้/เพิ่มได้ที่นี่ที่เดียว
+ALLOWED_FEATURES = frozenset({
+    "risk_dashboard",
+    "fiscal_dashboard",
+    "projects_view",
+    "filter_by_subdistrict",
+    "public_audit_info",
+    "assign_audit_tasks",
+    "team_reports",
+    "chatbot",
+    "audit_feedback",
+    "auditor_feedback",
+    "access_logs",
+    "risk_engine",
+    "user_management",
+    "contact_report",
+})
 
 
 class LoginRequest(BaseModel):
@@ -21,6 +40,28 @@ class UserOut(BaseModel):
     display_name: str | None = None
     role: str
     subdistrict_id: int | None = None
+    status: Literal["active", "disabled"] = "active"
+    allowed_features: list[str] = Field(default_factory=list)
+
+
+class UserUpdate(BaseModel):
+    """แก้ไขบางส่วน (partial) — ส่งเฉพาะ field ที่ต้องการเปลี่ยน ไม่แตะ username/password"""
+
+    display_name: str | None = None
+    role: str | None = None
+    subdistrict_id: int | None = None
+    status: Literal["active", "disabled"] | None = None
+    allowed_features: list[str] | None = None
+
+    @field_validator("allowed_features")
+    @classmethod
+    def _check_allowed_features(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return value
+        unknown = sorted(set(value) - ALLOWED_FEATURES)
+        if unknown:
+            raise ValueError(f"allowed_features ไม่รู้จัก: {', '.join(unknown)}")
+        return value
 
 
 class LoginResponse(BaseModel):

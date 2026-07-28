@@ -23,6 +23,8 @@ erDiagram
         text username
         text role FK "roles.role_code"
         int subdistrict_id FK
+        text status "active|disabled"
+        text_array allowed_features
     }
     projects {
         text project_id PK "e-GP"
