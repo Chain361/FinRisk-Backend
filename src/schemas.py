@@ -131,6 +131,30 @@ class AssignmentStatusUpdate(BaseModel):
     note: str | None = Field(default=None, max_length=5000)
 
 
+class AttachmentOut(BaseModel):
+    attachment_id: int
+    assignment_id: int
+    file_name: str
+    content_type: str
+    file_size: int
+    uploaded_by: int
+    uploaded_by_display_name: str | None = None
+    created_at: str
+
+
+class ClarificationCreate(BaseModel):
+    message_text: str = Field(min_length=1, max_length=5000)
+
+
+class ClarificationOut(BaseModel):
+    clarification_id: int
+    assignment_id: int
+    message_text: str
+    created_by: int
+    created_by_display_name: str | None = None
+    created_at: str
+
+
 class RiskEngineRunOut(BaseModel):
     run_id: int
     run_at: str

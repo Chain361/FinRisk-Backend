@@ -245,6 +245,35 @@ CREATE TABLE assignment_status_history (
 CREATE INDEX idx_assignment_history_assignment
     ON assignment_status_history(assignment_id, history_id);
 
+-- หลักฐานประกอบงานตรวจสอบ (evidence) — เก็บเป็น BYTEA ตรงๆ ใน Postgres เพราะระบบยังไม่มี
+-- object storage (deploy บน Vercel serverless, filesystem ไม่ persist) — เหมาะกับ prototype
+-- scope ปัจจุบัน ไฟล์ใหญ่/เยอะควรย้ายไป object storage จริงก่อนขึ้น production (จำกัด 10MB/ไฟล์
+-- ที่ชั้น API ดู src/routers/audit.py)
+CREATE TABLE assignment_attachments (
+    attachment_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    assignment_id INTEGER NOT NULL REFERENCES assignments(assignment_id),
+    file_name     TEXT NOT NULL,
+    content_type  TEXT NOT NULL,
+    file_size     INTEGER NOT NULL,
+    file_content  BYTEA NOT NULL,
+    uploaded_by   INTEGER NOT NULL REFERENCES users(user_id),
+    created_at    TEXT NOT NULL DEFAULT (now_text())
+);
+CREATE INDEX idx_assignment_attachments_assignment ON assignment_attachments(assignment_id);
+
+-- กระทู้ขอความชัดเจน (clarification thread) ระหว่าง risk_analyst กับ project_auditor ต่องาน
+-- ตรวจสอบหนึ่งงาน — เป็นข้อความคู่ขนานกับสถานะ 'clarification_needed' ของ assignments ไม่ได้
+-- บังคับผูกกับการเปลี่ยนสถานะ (โพสต์ได้ทุกสถานะ)
+CREATE TABLE assignment_clarifications (
+    clarification_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    assignment_id     INTEGER NOT NULL REFERENCES assignments(assignment_id),
+    message_text      TEXT NOT NULL,
+    created_by         INTEGER NOT NULL REFERENCES users(user_id),
+    created_at         TEXT NOT NULL DEFAULT (now_text())
+);
+CREATE INDEX idx_assignment_clarifications_assignment
+    ON assignment_clarifications(assignment_id, clarification_id);
+
 CREATE TABLE notifications (
     notification_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     user_id    INTEGER NOT NULL REFERENCES users(user_id),

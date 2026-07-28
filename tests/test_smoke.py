@@ -267,6 +267,150 @@ def test_auditor_can_create_assignment_with_history():
             con.commit()
 
 
+def test_assignment_attachments_and_clarifications():
+    """Evidence upload (BYTEA-in-DB) + clarification thread — scope guard, extension/size validation."""
+    from src.database import db_session
+
+    auditor_headers = {"X-Username": "auditor1"}  # ท่าช้าง
+    analysts = client.get("/audit/assignments/assignees", headers=auditor_headers).json()
+    analyst = next(a for a in analysts if a["username"] == "analyst1")
+
+    projects = client.get("/projects", headers=auditor_headers).json()
+    already_assigned = {
+        item["project_id"]
+        for item in client.get("/audit/assignments", headers=auditor_headers).json()
+        if item["status"] != "completed"
+    }
+    project = next(p for p in projects if p["project_id"] not in already_assigned)
+    created = client.post(
+        "/audit/assignments",
+        headers=auditor_headers,
+        json={
+            "project_id": str(project["project_id"]),
+            "assignee_id": analyst["user_id"],
+            "note": "ตรวจสอบเอกสารประกอบ",
+        },
+    )
+    assert created.status_code == 201
+    assignment_id = created.json()["assignment_id"]
+    analyst_headers = {"X-Username": "analyst1"}
+    other_subdistrict_headers = {"X-Username": "auditor2"}  # ปิงโค้ง — ต้องไม่มีสิทธิ์เห็นงานนี้
+
+    try:
+        # นามสกุลไฟล์ไม่อนุญาต → 422
+        rejected_ext = client.post(
+            f"/audit/assignments/{assignment_id}/attachments",
+            headers=analyst_headers,
+            files={"file": ("malware.exe", b"binary", "application/octet-stream")},
+        )
+        assert rejected_ext.status_code == 422
+
+        # ไฟล์เกิน 10MB → 413
+        too_big = client.post(
+            f"/audit/assignments/{assignment_id}/attachments",
+            headers=analyst_headers,
+            files={"file": ("big.pdf", b"0" * (10 * 1024 * 1024 + 1), "application/pdf")},
+        )
+        assert too_big.status_code == 413
+
+        # อัปโหลดไฟล์จริง (analyst แนบหลักฐาน)
+        pdf_bytes = b"%PDF-1.4 fake evidence content"
+        uploaded = client.post(
+            f"/audit/assignments/{assignment_id}/attachments",
+            headers=analyst_headers,
+            files={"file": ("evidence.pdf", pdf_bytes, "application/pdf")},
+        )
+        assert uploaded.status_code == 201
+        attachment = uploaded.json()
+        assert attachment["file_name"] == "evidence.pdf"
+        assert attachment["file_size"] == len(pdf_bytes)
+        assert "file_content" not in attachment
+        attachment_id = attachment["attachment_id"]
+
+        # auditor (เจ้าของงานฝั่งมอบหมาย) เห็นไฟล์และดาวน์โหลดได้ bytes ตรงตัว
+        listed = client.get(f"/audit/assignments/{assignment_id}/attachments", headers=auditor_headers)
+        assert listed.status_code == 200
+        assert len(listed.json()) == 1
+
+        downloaded = client.get(
+            f"/audit/assignments/{assignment_id}/attachments/{attachment_id}/download",
+            headers=auditor_headers,
+        )
+        assert downloaded.status_code == 200
+        assert downloaded.content == pdf_bytes
+
+        # scope guard — auditor ตำบลอื่นเห็น/ดาวน์โหลด/ลบไม่ได้
+        assert client.get(
+            f"/audit/assignments/{assignment_id}/attachments", headers=other_subdistrict_headers
+        ).status_code == 403
+        assert client.get(
+            f"/audit/assignments/{assignment_id}/attachments/{attachment_id}/download",
+            headers=other_subdistrict_headers,
+        ).status_code == 403
+        assert client.delete(
+            f"/audit/assignments/{assignment_id}/attachments/{attachment_id}",
+            headers=other_subdistrict_headers,
+        ).status_code == 403
+
+        # auditor (ไม่ใช่คนอัปโหลด, ไม่ใช่ admin) ลบไฟล์คนอื่นไม่ได้
+        assert client.delete(
+            f"/audit/assignments/{assignment_id}/attachments/{attachment_id}", headers=auditor_headers
+        ).status_code == 403
+
+        # เจ้าของไฟล์ (analyst) ลบไฟล์ตัวเองได้
+        deleted = client.delete(
+            f"/audit/assignments/{assignment_id}/attachments/{attachment_id}", headers=analyst_headers
+        )
+        assert deleted.status_code == 204
+        assert client.get(f"/audit/assignments/{assignment_id}/attachments", headers=auditor_headers).json() == []
+
+        # clarification thread — 2 ทาง, เรียงตามลำดับที่ส่ง
+        ask = client.post(
+            f"/audit/assignments/{assignment_id}/clarifications",
+            headers=analyst_headers,
+            json={"message_text": "ขอเอกสารราคากลางเพิ่มเติมได้ไหมครับ"},
+        )
+        assert ask.status_code == 201
+        reply = client.post(
+            f"/audit/assignments/{assignment_id}/clarifications",
+            headers=auditor_headers,
+            json={"message_text": "ส่งให้แล้วในระบบ e-GP ครับ"},
+        )
+        assert reply.status_code == 201
+
+        thread = client.get(f"/audit/assignments/{assignment_id}/clarifications", headers=analyst_headers)
+        assert thread.status_code == 200
+        messages = thread.json()
+        assert len(messages) == 2
+        assert messages[0]["message_text"] == "ขอเอกสารราคากลางเพิ่มเติมได้ไหมครับ"
+        assert messages[1]["created_by_display_name"]
+
+        # scope guard เดียวกันกับ clarifications
+        assert client.get(
+            f"/audit/assignments/{assignment_id}/clarifications", headers=other_subdistrict_headers
+        ).status_code == 403
+        assert client.post(
+            f"/audit/assignments/{assignment_id}/clarifications",
+            headers=other_subdistrict_headers,
+            json={"message_text": "ไม่ควรเห็น"},
+        ).status_code == 403
+
+        # แจ้งเตือนถูกสร้างให้อีกฝ่ายเมื่อโพสต์ข้อความ (analyst ถาม → แจ้ง auditor ผู้มอบหมาย)
+        notif = client.get("/notifications", headers=auditor_headers).json()
+        assert any(
+            n["type"] == "clarification" and n["ref_id"] == str(assignment_id)
+            for n in notif["notifications"]
+        )
+    finally:
+        with db_session() as con:
+            con.execute("DELETE FROM assignment_attachments WHERE assignment_id = ?", (assignment_id,))
+            con.execute("DELETE FROM assignment_clarifications WHERE assignment_id = ?", (assignment_id,))
+            con.execute("DELETE FROM notifications WHERE ref_type = 'assignment' AND ref_id = ?", (str(assignment_id),))
+            con.execute("DELETE FROM assignment_status_history WHERE assignment_id = ?", (assignment_id,))
+            con.execute("DELETE FROM assignments WHERE assignment_id = ?", (assignment_id,))
+            con.commit()
+
+
 def test_admin_risk_engine_run_role_gate():
     admin = {"X-Username": "admin"}
     before = client.get("/risk/summary", headers=admin).json()["total"]
