@@ -132,6 +132,51 @@ Automatic run:
 - Set repository secret `DATABASE_URL` to the target DB connection string.
 - GitHub scheduled workflows run from the default branch after this workflow is merged.
 - The workflow also supports `workflow_dispatch` for manual runs from GitHub Actions.
+### 2.1 Ingest เอกสาร ปร. ขึ้น Pinecone (ทางเลือก — สำหรับค้นเนื้อหาเอกสารเต็ม)
+
+ชั้น RAG แยกจากระบบหลักทั้งหมด **ข้ามขั้นนี้ได้ ระบบเดิมทำงานครบ** (ดู `docs/rag_pinecone_plan.md`)
+
+```bash
+pip install pinecone transformers        # transformers ใช้แค่ตอนนับ token ก่อน upsert
+# ใส่ใน .env ที่ repo root: TYPHOON_OCR_API_KEY=... และ PINECONE_API_KEY=...
+
+python -m scripts.ingest_documents --project MOCK-CON-001 --dry-run --show-chunks   # ดู chunk ก่อน
+python -m scripts.ingest_documents --project MOCK-CON-001                           # upsert จริง
+```
+
+* **`--dry-run`** : OCR + chunk + นับ token แล้วพิมพ์ออกมาเฉยๆ ไม่แตะ Pinecone และไม่เขียน DB
+* **`--table-format markdown\|html`** : Typhoon คืนตารางเป็น HTML — default แปลงเป็นตาราง `|` ก่อน chunk
+* **`--max-chars`** (default 600) : เพดานจริงคือ 480 token/chunk — เกินแล้ว **สคริปต์ fail** ไม่ใช่แค่เตือน
+  เพราะโมเดล `multilingual-e5-large` ตัดส่วนเกินทิ้งเงียบๆ โดยไม่มี error
+* **`--force-ocr`** : OCR ใหม่ (ปกติใช้ cache ใน `ocr_pipeline/work/rag-ingest/ocr/` ไม่เสียโควตาซ้ำ)
+
+> ⚠️ สคริปต์นี้ **ไม่เขียน `project_documents` เลย** — `status`/`extracted_json`/`file_path` เป็นของ
+> `seed_database.py` ผู้เดียว risk factor L1/L3 ที่อ่าน `status` จึงไม่มีทางถูกกระทบ
+> ส่วน `document_chunks` ถูก **เขียนทับ** ด้วย chunk จาก OCR (ของเดิมที่ seed ใส่คือ `summary_text`)
+
+### 2.2 ใช้งานชั้นค้นเอกสาร (retrieval)
+
+หลัง ingest แล้ว `PINECONE_API_KEY` ใน `.env` เปิดสองอย่างพร้อมกัน: endpoint ค้นเอกสาร และ tool ตัวที่ 6
+ของ chatbot (`search_document_text`) — **คีย์ว่าง = ปิดทั้งคู่ ระบบเดิมทำงานครบเหมือนเดิม**
+
+```bash
+uvicorn src.main:app --reload
+TOKEN=$(curl -s -X POST localhost:8000/auth/login -H 'Content-Type: application/json' \
+        -d '{"username":"auditor3","password":"password123"}' | python -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
+
+# min_score=0 → เห็นคะแนนดิบทุก hit (ใช้ตอน calibrate)
+curl -H "Authorization: Bearer $TOKEN" \
+  "localhost:8000/projects/MOCK-CON-001/documents/search?q=Factor%20F&min_score=0"
+
+python -m scripts.calibrate_rag        # ยิงชุดคำถามที่รู้คำตอบ → เสนอค่า RAG_MIN_SCORE
+```
+
+* ใช้ **`auditor3`/`analyst3`/`admin`** เท่านั้น — MOCK-CON-001 อยู่ตำบลโยนก `auditor1` (ท่าช้าง)
+  จะได้ 403 ซึ่ง**ถูกต้องตาม scope guard** ไม่ใช่ RAG พัง
+* คำตอบของ chatbot ที่อ้างเนื้อความเอกสารจะมี `citations`
+  (`doc_type_code`, `doc_no`, `page_no`, `chunk_no`) ติดมาใน response เสมอ
+* `RAG_MIN_SCORE` default 0.82 **ยังเป็นค่าเดา** — e5 ให้คะแนนคู่ที่ไม่เกี่ยวกันเลยราว 0.70–0.78
+  ตั้งต่ำไป = chunk มั่วไหลเข้าไปให้ LLM ตอบ, สูงไป = ผู้ใช้เห็น "ไม่พบข้อมูล" ทั้งที่มี
 
 ---
 
@@ -152,7 +197,8 @@ data_modelling/
 │  │  ├─ legal.py               # ชั้นกฎหมาย (laws/sections/factor_legal_map)
 │  │  ├─ documents.py           # ชั้นเอกสาร (doc types/status/missing/findings)
 │  │  ├─ users.py               # get_users / update_user (user-management)
-│  │  └─ chatbot.py             # orchestration เรียก Gemini + tool-calling (ดู docs/chatbot_architecture.md)
+│  │  ├─ retrieval.py           # ค้นเนื้อหาเอกสารเต็มบน Pinecone + post-verify กับ Postgres (ดู §2.2)
+│  │  └─ chatbot.py             # orchestration Gemini function-calling (tool 6 ตัว — ดู docs/chatbot_architecture.md)
 │  └─ routers/                  # endpoint แยกตามโดเมน
 │     ├─ auth.py                # /auth/login, /auth/me
 │     ├─ subdistricts.py        # /subdistricts
@@ -165,13 +211,19 @@ data_modelling/
 │     ├─ notifications.py       # /notifications — unread count, mark-as-read
 │     ├─ public.py              # /public/projects/export — open data (CSV/JSON)
 │     ├─ legal.py               # /legal/laws, /risk/projects/{id}/legal
-│     ├─ documents.py           # /documents/types, /projects/{id}/documents
+│     ├─ documents.py           # /documents/types, /projects/{id}/documents(/search)
 │     └─ chatbot.py             # /chatbot — Gemini function-calling (admin/project_auditor/risk_analyst)
 ├─ tests/
 │  ├─ test_smoke.py             # smoke test (pytest)
-│  └─ test_legal_documents.py   # เทสต์ชั้นกฎหมาย + ชั้นเอกสาร
+│  ├─ test_legal_documents.py   # เทสต์ชั้นกฎหมาย + ชั้นเอกสาร
+│  ├─ test_chatbot.py           # เทสต์ orchestration + scope guard ของ chatbot
+│  └─ test_retrieval.py         # เทสต์ชั้น RAG (scope guard สองชั้น + citations)
+├─ scripts/
+│  ├─ ingest_documents.py       # offline: OCR เอกสาร ปร. → chunk → upsert Pinecone (ดู §2.1)
+│  └─ calibrate_rag.py          # offline: หาค่า RAG_MIN_SCORE จาก chunk จริง (ดู §2.2)
 ├─ legal_refs/                  # CSV กฎหมายที่ curate แล้ว (laws, law_sections, factor_legal_map)
 ├─ mock_documents/              # CSV ชั้นเอกสาร mock (doc types, documents, findings, finding map)
+├─ raw_documents/               # ไฟล์ภาพเอกสาร ปร.4/5/6 ของโครงการเดโม (ต้นทางของ RAG)
 ├─ seed_database.py             # สร้าง schema บน PostgreSQL + seed + รัน risk engine + validate
 ├─ standardized_data/           # CSV กลางที่ seed อ่านเข้า
 │  ├─ projects_ALL_master.csv          (98 แถว → 97 โครงการหลัง dedup)
@@ -279,6 +331,9 @@ curl http://127.0.0.1:8000/legal/laws                              -H "Authoriza
 curl http://127.0.0.1:8000/risk/projects/MOCK-CON-002/legal        -H "Authorization: Bearer $TOKEN"
 curl "http://127.0.0.1:8000/risk/projects/MOCK-CON-002/legal?only_triggered=true" -H "Authorization: Bearer $TOKEN"
 curl http://127.0.0.1:8000/projects/MOCK-CON-001/documents         -H "Authorization: Bearer $TOKEN"
+
+# ค้นเนื้อความในตัวเอกสาร (ต้องมี PINECONE_API_KEY + ingest แล้ว — ดู §2.1/§2.2 ไม่งั้นตอบ 503)
+curl "http://127.0.0.1:8000/projects/MOCK-CON-001/documents/search?q=Factor%20F" -H "Authorization: Bearer $TOKEN"
 ```
 
 `/risk/projects/{id}/legal` คืน risk factor ล่าสุดของโครงการพร้อม `computable`,
@@ -385,3 +440,10 @@ cp -r ocr_pipeline/work/t67/ocr pipeline/ocr_output/thachang67
 - PDPA/privacy workflow: vendor/project personal-data inventory and public project-detail masking
   are documented/implemented (`docs/PDPA_DATA_INVENTORY.md`, `src/privacy.py`); privacy notice
   and data-subject request process remain backlog items (issue #28).
+- log retention policy (archive/delete ตามอายุ `access_log`) ยังไม่มีโค้ด/migration ใดๆ ในนี้เลย
+  (backlog, issue #28)
+- RAG: ต่อครบแล้ว (ingest → retrieval → endpoint → tool ตัวที่ 6 → citations + เทสต์) เหลือ
+  **calibrate `RAG_MIN_SCORE`** ด้วย `python -m scripts.calibrate_rag` แล้วตั้งค่าใน `.env`
+  (ค่า 0.82 ที่ใช้อยู่ยังเป็นค่าเดา) และตั้ง env บน Vercel — ดู `docs/rag_pinecone_plan.md` §0.1
+- RAG: ยังไม่มีขั้นตอนลบ record ส่วนเกินบน Pinecone ถ้า ingest รอบใหม่ได้ chunk น้อยลงกว่ารอบก่อน
+  (เอกสารชุด demo คงที่จึงยังไม่กระทบ)
