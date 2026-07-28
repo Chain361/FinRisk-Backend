@@ -199,6 +199,9 @@ def test_auditor_can_create_assignment_with_history():
     analysts = client.get("/audit/assignments/assignees", headers=auditor_headers)
     assert analysts.status_code == 200
     analyst = analysts.json()[0]
+    assert analyst["entity_type"] == "user"
+    assert analyst["user_label"] == f"user:{analyst['username']}"
+    assert analyst["role"] == "risk_analyst"
 
     projects = client.get("/projects", headers=auditor_headers).json()
     already_assigned = {
@@ -225,6 +228,8 @@ def test_auditor_can_create_assignment_with_history():
         detail = client.get(f"/audit/assignments/{assignment_id}", headers=auditor_headers)
         assert detail.status_code == 200
         assert detail.json()["assignment"]["status"] == "waiting_acceptance"
+        assert detail.json()["assignment"]["assignee_entity_type"] == "user"
+        assert detail.json()["assignment"]["assignee_user_label"] == f"user:{analyst['username']}"
         assert detail.json()["status_history"][0]["new_status"] == "waiting_acceptance"
 
         analyst_headers = {"X-Username": analyst["username"]}

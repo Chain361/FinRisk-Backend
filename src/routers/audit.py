@@ -78,6 +78,8 @@ SUPERVISOR_TRANSITIONS = {
 }
 ASSIGNMENT_SELECT = """
     SELECT a.*, p.project_name, p.subdistrict_id,
+           'user' AS assignee_entity_type,
+           'user:' || assignee.username AS assignee_user_label,
            assignee.username AS assignee_username,
            assignee.display_name AS assignee_display_name,
            assigner.username AS assigned_by_username,
@@ -173,7 +175,9 @@ def assignment_assignees(
         where.append("u.subdistrict_id IN ({})".format(",".join("?" * len(scope)) or "NULL"))
         params.extend(scope)
     rows = conn.execute(
-        f"""SELECT u.user_id, u.username, u.display_name, u.subdistrict_id,
+        f"""SELECT u.user_id, u.username, u.display_name, u.role, u.subdistrict_id,
+                   'user' AS entity_type,
+                   'user:' || u.username AS user_label,
                    COUNT(a.assignment_id) AS active_cases
             FROM users u
             LEFT JOIN assignments a ON a.assigned_to = u.user_id

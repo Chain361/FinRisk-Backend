@@ -31,8 +31,20 @@ pytest -q                              # smoke test
   `SqliteLikeRow` เลียนแบบ `sqlite3.Row` (index ตัวเลข + key ชื่อคอลัมน์ + iterate เป็นค่า)
   เพื่อให้ query เดิมทั่ว repo ใช้ต่อได้โดยไม่ต้องแก้ทีละจุด; helper `rows_to_dicts()`
 - `src/auth.py` — JWT login (bcrypt + PyJWT) + `get_current_user`, `require_roles(...)`, `scope_subdistrict_ids(...)`
-- `src/schemas.py` — Pydantic model (request/response)
-- `src/routers/*.py` — endpoint แยกตามโดเมน (auth, subdistricts, projects, risk, audit, admin)
+- `src/schemas.py` — Pydantic model (request/response) + `ALLOWED_FEATURES` (14 flags ของ user-management)
+- `src/notify.py` — `create_notification()` helper insert-only ใช้โดย `audit.py`/`admin.py`
+- `src/services/*.py` — **"agent tool contract"**: logic + scope guard เขียนเป็น service function
+  ที่ raise domain error (`NotFoundError`/`ForbiddenError`/`ValidationError` จาก `services/common.py`)
+  แทนที่จะ raise `HTTPException` ตรงๆ เพื่อให้ทั้ง router (HTTP) และ chatbot tool (non-HTTP)
+  เรียก logic เดียวกันได้ — มี `common.py`, `projects.py`, `legal.py`, `documents.py`, `users.py`,
+  `chatbot.py` (orchestration เอง ไม่ใช่ tool ที่ถูกเรียก)
+  ⚠️ **ข้อยกเว้น**: `src/routers/audit.py` ยังไม่มี service layer เลย — เขียน SQL ตรงในราวเตอร์
+  ทั้งไฟล์ ไม่ตาม pattern นี้ (ผลคือ `/audit/feedback` มีช่องโหว่ scope guard ที่ยังไม่ได้แก้ ดู
+  หัวข้อ "สิ่งที่ยังไม่ทำ" ด้านล่าง) — ถ้าเพิ่มฟีเจอร์ใหม่ในไฟล์นี้ พิจารณา extract เป็น
+  `services/audit.py` ไปพร้อมกัน
+- `src/routers/*.py` — endpoint แยกตามโดเมน: `auth, subdistricts, projects, risk, audit, financials,
+  admin, users, notifications, public, legal (2 routers), documents (2 routers), chatbot`
+  (ครบตามที่ include ใน `main.py`)
 
 **Data flow:** CSV (`standardized_data/`) → `seed_database.py` เขียนลง PostgreSQL (ตาม `DATABASE_URL`)
 → risk engine ใน seed คำนวณและเขียนตาราง `*_risk_results` / `project_risk_scores`
@@ -42,6 +54,11 @@ pytest -q                              # smoke test
 `seed_vendors`/`seed_projects`/`seed_financial`/`run_project_engine`/`run_annual_engine`
 จาก `seed_database.py` ตรงๆ (import เป็น top-level module จาก repo root) **ห้ามก็อปโค้ด
 มาเขียนซ้ำใน router** เพราะ logic ต้องอยู่ที่เดียวตามกติกาด้านล่าง
+
+**Chatbot (`POST /chatbot`, PR #26):** ไม่มีตรรกะ query ของตัวเอง — `src/services/chatbot.py`
+เรียก service function เดิม (`projects.py`/`legal.py`/`documents.py`) เป็น "tool" ให้ Gemini
+function-calling เท่านั้น การ์ดสิทธิ์จึงเป็น deterministic ผ่าน `scope_subdistrict_ids` เดิม
+ไม่ใช่ prompt guardrail รายละเอียดโมเดล/ทำไมไม่ใช้ RAG ดู `docs/chatbot_architecture.md`
 
 **เขียน SQL ใหม่:** ใช้ `?` placeholder แบบเดิมได้เลย (แปลงเป็น `%s` อัตโนมัติที่ `src/database.py`)
 แต่ต้องรู้ 3 จุดต่างจาก SQLite เดิม: (1) ไม่มี `.lastrowid` — ใช้ `INSERT ... RETURNING <pk>` แล้ว
@@ -94,7 +111,16 @@ pytest -q                              # smoke test
 
 ## สิ่งที่ยังไม่ทำ
 
-- deploy จริง (Vercel serverless) ยังต้องชี้ `DATABASE_URL` ไป managed Postgres ที่ persistent
-  (เช่น Neon/Supabase/RDS) — ยังไม่ได้ provision
 - ต่อ `ocr_pipeline/` เข้าชั้นเอกสาร — ตอนนี้ `project_documents`/`document_findings`
   เป็น `source='mock'` ทั้งหมด ยังไม่มีแถว `source='ocr'`
+- `GET /audit/feedback` + `GET /audit/feedback/{project_id}` คืน feedback สถานะ `draft`
+  ของ auditor คนอื่นให้ทุก role ใน scope เห็น (รวม `local_executive` ซึ่งเป็นฝ่ายถูกตรวจ)
+  — ควร filter ให้ draft เห็นเฉพาะเจ้าของ (issue #30)
+- `GET /audit/feedback/{project_id}` ยังไม่ผ่าน scope guard (ส่ง project_id ของตำบลอื่นก็เห็นได้ —
+  issue #30 เดียวกัน เกิดจาก `audit.py` ไม่มี service layer ตามที่ระบุด้านบน)
+- `JWT_SECRET` default (`dev-only-insecure-secret-change-before-production`) แค่ warn ตอน startup
+  ไม่ fail-fast — ควร raise/exit ตอน import ถ้ายังเป็นค่า default และ env เป็น production (issue #31)
+- `POST /chatbot` ไม่มี rate limit ต่อ user เลย — 1 ข้อความอาจ trigger tool-calling ได้ถึง
+  `MAX_TOOL_TURNS=5` รอบ เสี่ยง cost ของ Gemini API บานถ้ามีคนยิงรัว (issue #32)
+- log retention (archive/delete `access_log` ตามอายุ) — ยังไม่มีโค้ด/migration ใดๆ บน `main`
+  เลย เป็น backlog ล้วนๆ (issue #28)
