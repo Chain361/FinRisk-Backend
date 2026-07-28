@@ -454,6 +454,61 @@ CREATE INDEX idx_access_log_time      ON access_log(created_at);
 
 > ⚠️ **ข้อจำกัดบน Vercel:** filesystem อ่านอย่างเดียวตอน runtime → log จะไม่ถูกเขียน (ดูว่างเปล่า). ฟีเจอร์นี้ทำงานเต็มรูปแบบเมื่อ deploy บนเซิร์ฟเวอร์ที่ DB เขียนได้ (สภาพแวดล้อมจริงของหน่วยงานที่ self-host). ระยะยาว: ย้าย log ไป DB ภายนอก/managed เพื่อความคงทน.
 
+### 6.4.1 Log retention policy
+
+นโยบายเริ่มต้นสำหรับ `access_log` และ security/audit log ของระบบ:
+
+- hot/searchable logs: เก็บใน `access_log` อย่างน้อย 90 วัน
+- compressed archive: ย้ายไป `access_log_archive` และเก็บอ่านย้อนหลังได้จนครบ 365 วัน
+- permanent delete: ลบ archive หลัง 365 วัน เว้นแต่มี legal hold / investigation hold ใน `access_log_holds`
+- error/debug logs ที่อาจปน PII: ค่า config แนะนำ `error_debug_log_hot_days = 30` และต้องหลีกเลี่ยงการ log request body/query string ที่ไม่จำเป็น
+
+ตาราง retention:
+
+```sql
+CREATE TABLE access_log_archive (
+    archive_id       INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    original_log_id  INTEGER NOT NULL UNIQUE,
+    username         TEXT,
+    role             TEXT,
+    action           TEXT NOT NULL,
+    method           TEXT NOT NULL,
+    path             TEXT NOT NULL,
+    resource_type    TEXT,
+    resource_id      TEXT,
+    status_code      INTEGER,
+    created_at       TEXT NOT NULL,
+    payload_gzip_base64 TEXT NOT NULL,
+    compressed_at    TEXT NOT NULL DEFAULT (now_text()),
+    delete_after     TEXT NOT NULL,
+    archived_by      TEXT
+);
+
+CREATE TABLE access_log_holds (
+    hold_id        INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    log_id         INTEGER NOT NULL UNIQUE,
+    reason         TEXT NOT NULL,
+    case_reference TEXT,
+    created_by     TEXT,
+    created_at     TEXT NOT NULL DEFAULT (now_text())
+);
+
+CREATE TABLE log_retention_runs (
+    run_id        INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    run_at        TEXT NOT NULL DEFAULT (now_text()),
+    hot_days      INTEGER NOT NULL,
+    archive_days  INTEGER NOT NULL,
+    archived_count INTEGER NOT NULL,
+    deleted_count  INTEGER NOT NULL,
+    archive_cutoff TEXT NOT NULL,
+    delete_cutoff  TEXT NOT NULL,
+    triggered_by   TEXT,
+    note           TEXT
+);
+```
+
+**API:** `POST /admin/log-retention/run` รัน archive/delete ตาม policy, `POST /admin/log-retention/holds` ตั้ง hold, และ `GET /audit/access-log/archive` อ่าน archive ที่ถูกบีบอัดแล้วโดย decode เป็น JSON ให้ admin. สำหรับ DB ที่มีข้อมูลเดิมให้รัน `migrations/20260728_log_retention.sql` ด้วย role ที่มีสิทธิ์ create table/index แทนการ seed ใหม่ทั้งฐาน.
+
 ### 6.5 `notifications` — แจ้งเตือนผู้ใช้ (#19, หลักฐานว่า "แจ้งแล้วเมื่อไหร่")
 
 ```sql

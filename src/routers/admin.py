@@ -9,7 +9,7 @@ run_project_engine/run_annual_engine ที่มีอยู่แล้ว
 `cur.execute(...)` แล้วอ่าน `cur.description`/`cur.fetchall()` ต่อจาก cursor ตัวเดิม —
 ต้องใช้ `conn.cursor()` เสมอ ห้ามส่ง `conn` เข้าไปตรงๆ
 """
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 
 from seed_database import (
     read_csv_clean_bytes,
@@ -22,10 +22,57 @@ from seed_database import (
 
 from ..auth import require_roles
 from ..database import Connection, get_db
+from ..log_retention import run_access_log_retention, upsert_access_log_hold
 from ..notify import create_notification
-from ..schemas import DataUploadOut, RiskEngineRunOut
+from ..schemas import AccessLogHoldIn, AccessLogHoldOut, DataUploadOut, LogRetentionRunOut, RiskEngineRunOut
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+@router.post("/log-retention/run", response_model=LogRetentionRunOut)
+def run_log_retention(
+    user: dict = Depends(require_roles("admin")),
+    conn: Connection = Depends(get_db),
+    hot_days: int | None = Query(default=None, ge=1, le=3650),
+    archive_days: int | None = Query(default=None, ge=1, le=3650),
+):
+    """Archive old access logs and delete expired archive rows unless they are on hold."""
+    if hot_days is not None and archive_days is not None and hot_days > archive_days:
+        raise HTTPException(status_code=422, detail="hot_days must be less than or equal to archive_days")
+    try:
+        result = run_access_log_retention(
+            conn,
+            triggered_by=user["username"],
+            hot_days=hot_days,
+            archive_days=archive_days,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    conn.commit()
+    return LogRetentionRunOut(**result)
+
+
+@router.post("/log-retention/holds", response_model=AccessLogHoldOut, status_code=201)
+def create_log_retention_hold(
+    body: AccessLogHoldIn,
+    user: dict = Depends(require_roles("admin")),
+    conn: Connection = Depends(get_db),
+):
+    """Put an access-log row on legal/investigation hold so retention will not delete it."""
+    try:
+        row = upsert_access_log_hold(
+            conn,
+            log_id=body.log_id,
+            reason=body.reason,
+            case_reference=body.case_reference,
+            created_by=user["username"],
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    conn.commit()
+    return AccessLogHoldOut(**row)
 
 
 def _notify_new_high_risk_projects(cur, conn: Connection, run_id: int) -> None:

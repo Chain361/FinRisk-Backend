@@ -169,6 +169,43 @@ erDiagram
         text user_agent
         text created_at
     }
+    access_log_archive {
+        int archive_id PK
+        int original_log_id UK
+        text username
+        text role
+        text action
+        text method
+        text path
+        text resource_type
+        text resource_id
+        int status_code
+        text created_at
+        text payload_gzip_base64
+        text compressed_at
+        text delete_after
+        text archived_by
+    }
+    access_log_holds {
+        int hold_id PK
+        int log_id UK
+        text reason
+        text case_reference
+        text created_by
+        text created_at
+    }
+    log_retention_runs {
+        int run_id PK
+        text run_at
+        int hot_days
+        int archive_days
+        int archived_count
+        int deleted_count
+        text archive_cutoff
+        text delete_cutoff
+        text triggered_by
+        text note
+    }
     notifications {
         int notification_id PK
         int user_id FK

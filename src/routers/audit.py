@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from ..auth import require_roles, scope_subdistrict_ids
 from ..database import Connection, SqliteLikeRow, get_db, rows_to_dicts
+from ..log_retention import list_archived_access_logs
 from ..notify import create_notification
 from ..schemas import (
     AssignmentCreate,
@@ -545,3 +546,33 @@ def access_log(
         [*params, limit, offset],
     ).fetchall()
     return {"items": rows_to_dicts(rows), "total": total, "limit": limit, "offset": offset}
+
+
+@router.get("/access-log/archive")
+def access_log_archive(
+    _: dict = Depends(require_roles("admin")),
+    conn: Connection = Depends(get_db),
+    username: str | None = None,
+    action: str | None = None,
+    resource_type: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+):
+    inclusive_date_to = None
+    if date_to:
+        inclusive_date_to = (date.fromisoformat(date_to) + timedelta(days=1)).isoformat()
+    try:
+        return list_archived_access_logs(
+            conn,
+            username=username,
+            action=action,
+            resource_type=resource_type,
+            date_from=date_from,
+            date_to=inclusive_date_to,
+            limit=limit,
+            offset=offset,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc

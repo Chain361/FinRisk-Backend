@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
 """Smoke test — ยืนยันว่า app boot ได้และ endpoint หลักทำงานกับ fraud_risk.db"""
+from datetime import datetime, timedelta, timezone
+
+import pytest
 from fastapi.testclient import TestClient
 
 from src.main import app
@@ -279,6 +282,132 @@ def test_admin_risk_engine_run_role_gate():
 
     after = client.get("/risk/summary", headers=admin).json()["total"]
     assert after == before  # แค่รันซ้ำ ไม่ได้เพิ่มโครงการ — จำนวนควรเท่าเดิม
+
+
+def test_admin_log_retention_archives_deletes_and_respects_hold():
+    from src.database import db_session
+    from src.log_retention import ensure_log_retention_schema
+
+    admin = {"X-Username": "admin"}
+    now = datetime.now(timezone.utc)
+    archive_time = (now - timedelta(days=120)).strftime("%Y-%m-%d %H:%M:%S")
+    delete_time = (now - timedelta(days=400)).strftime("%Y-%m-%d %H:%M:%S")
+    usernames = (
+        "pytest_retention_archive",
+        "pytest_retention_delete",
+        "pytest_retention_hold",
+    )
+    with db_session() as con:
+        try:
+            ensure_log_retention_schema(con)
+            con.commit()
+        except RuntimeError as exc:
+            pytest.skip(str(exc))
+
+    log_ids: list[int] = []
+    try:
+        with db_session() as con:
+            placeholders = ",".join("?" * len(usernames))
+            con.execute(f"DELETE FROM access_log WHERE username IN ({placeholders})", list(usernames))
+            stale_ids = [
+                row["original_log_id"]
+                for row in con.execute(
+                    f"SELECT original_log_id FROM access_log_archive WHERE username IN ({placeholders})",
+                    list(usernames),
+                ).fetchall()
+            ]
+            if stale_ids:
+                stale_placeholders = ",".join("?" * len(stale_ids))
+                con.execute(
+                    f"DELETE FROM access_log_holds WHERE log_id IN ({stale_placeholders})",
+                    stale_ids,
+                )
+            con.execute(
+                f"DELETE FROM access_log_archive WHERE username IN ({placeholders})",
+                list(usernames),
+            )
+            for username, created_at in [
+                ("pytest_retention_archive", archive_time),
+                ("pytest_retention_delete", delete_time),
+                ("pytest_retention_hold", delete_time),
+            ]:
+                row = con.execute(
+                    """INSERT INTO access_log
+                       (username, role, action, method, path, resource_type,
+                        resource_id, status_code, ip, user_agent, created_at)
+                       VALUES (?, 'admin', 'view_detail', 'GET', ?, 'project',
+                               'PYTEST', 200, '127.0.0.1', 'pytest', ?)
+                       RETURNING log_id""",
+                    (username, f"/projects/{username}", created_at),
+                ).fetchone()
+                log_ids.append(row["log_id"])
+            con.commit()
+
+        hold = client.post(
+            "/admin/log-retention/holds",
+            headers=admin,
+            json={
+                "log_id": log_ids[2],
+                "reason": "pytest investigation hold",
+                "case_reference": "PYTEST-CASE-001",
+            },
+        )
+        assert hold.status_code == 201
+
+        denied = client.post("/admin/log-retention/run", headers={"X-Username": "auditor1"})
+        assert denied.status_code == 403
+
+        run = client.post("/admin/log-retention/run", headers=admin)
+        assert run.status_code == 200, run.text
+        body = run.json()
+        assert body["hot_days"] == 90
+        assert body["archive_days"] == 365
+        assert body["archived_count"] >= 3
+        assert body["deleted_count"] >= 1
+
+        archived = client.get(
+            "/audit/access-log/archive",
+            headers=admin,
+            params={"username": "pytest_retention_archive"},
+        )
+        assert archived.status_code == 200
+        assert archived.json()["total"] == 1
+        assert archived.json()["items"][0]["path"] == "/projects/pytest_retention_archive"
+
+        held = client.get(
+            "/audit/access-log/archive",
+            headers=admin,
+            params={"username": "pytest_retention_hold"},
+        )
+        assert held.status_code == 200
+        assert held.json()["total"] == 1
+
+        deleted = client.get(
+            "/audit/access-log/archive",
+            headers=admin,
+            params={"username": "pytest_retention_delete"},
+        )
+        assert deleted.status_code == 200
+        assert deleted.json()["total"] == 0
+
+        with db_session() as con:
+            placeholders = ",".join("?" * len(log_ids))
+            remaining_hot = con.execute(
+                f"SELECT COUNT(*) FROM access_log WHERE log_id IN ({placeholders})",
+                log_ids,
+            ).fetchone()[0]
+            assert remaining_hot == 0
+    finally:
+        with db_session() as con:
+            if log_ids:
+                placeholders = ",".join("?" * len(log_ids))
+                con.execute(f"DELETE FROM access_log_holds WHERE log_id IN ({placeholders})", log_ids)
+                con.execute(
+                    f"DELETE FROM access_log_archive WHERE original_log_id IN ({placeholders})",
+                    log_ids,
+                )
+                con.execute(f"DELETE FROM access_log WHERE log_id IN ({placeholders})", log_ids)
+            con.commit()
 
 
 def test_admin_data_upload():
