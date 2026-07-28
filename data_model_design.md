@@ -92,6 +92,8 @@ CREATE TABLE vendors (
 
 เหตุผล: ข้อมูลจริงมีผู้ชนะซ้ำสูง (ที เอ็น ดับเบิ้ลยูฯ ชนะ 12 โครงการ, พีเอพีฯ 10 โครงการ) → เป็นวัตถุดิบ risk factor กลุ่มผู้รับจ้างซ้ำในอนาคต dedup ด้วย `name` (TIN เชื่อไม่ได้ ดู §9.3)
 
+PDPA note: `vendors.tin` and natural-person style `vendors.name` are treated as personal data for public-facing views. Public project detail masks raw TIN, masks person-like vendor names, and hides internal contract/vendor identifiers. See `docs/PDPA_DATA_INVENTORY.md` and `src/privacy.py`.
+
 ### 3.3 `roles` + `users`
 
 ```sql

@@ -237,8 +237,9 @@ Same rule applies to legal linkage: ถ้า factor `triggered=1` แต่ย�
 - `JWT_SECRET` default ควร fail-fast ตอน production แทนแค่ warning log (issue #31)
 - เพิ่ม rate limit ให้ `POST /chatbot` ต่อ user (issue #32)
 - ต่อ `ocr_pipeline/` เข้าชั้นเอกสารจริง — ตอนนี้ `document_findings` เป็น `source='mock'` ทั้งหมด
-- PDPA/privacy workflow สำหรับ vendor/project personal-data inventory, additional masking,
-  privacy notice, และ data-subject request process ยังเป็น backlog แยกจาก log-retention implementation.
+- PDPA/privacy workflow: vendor/project personal-data inventory and public project-detail masking
+  are documented/implemented (`docs/PDPA_DATA_INVENTORY.md`, `src/privacy.py`); privacy notice
+  and data-subject request process remain backlog items.
 
 **Legacy note:** ตาราง `audit_reports` มีอยู่ใน schema (`seed_database.py` DDL) แต่ไม่มีโค้ดใดใน
 `src/` อ้างอิงถึงแล้ว — ถูกแทนที่ด้วย `auditor_feedback` ตอนทำ approval-chain (#14) ยังไม่ได้ลบออก

@@ -382,6 +382,6 @@ cp -r ocr_pipeline/work/t67/ocr pipeline/ocr_output/thachang67
   ทั้งหมด) — ก่อนให้ finding จาก OCR/LLM ขยับ risk score ต้องเพิ่ม review gate ให้คนยืนยันก่อน
 - curate mapping กฎหมายของ A2/A3 (ตอนนี้ยังไม่มี → chatbot ตอบ "ยังไม่มีการเชื่อมโยงข้อกฎหมาย")
 - `POST /chatbot` ยังไม่มี rate limit ต่อ user — เสี่ยง cost บานถ้ามีคนยิงรัว (issue #32)
-- PDPA/privacy workflow สำหรับ vendor/project personal-data inventory, masking policy,
-  privacy notice, และ data-subject request process ยังเป็น backlog แยกจาก log retention
-  (backlog, issue #28)
+- PDPA/privacy workflow: vendor/project personal-data inventory and public project-detail masking
+  are documented/implemented (`docs/PDPA_DATA_INVENTORY.md`, `src/privacy.py`); privacy notice
+  and data-subject request process remain backlog items (issue #28).
