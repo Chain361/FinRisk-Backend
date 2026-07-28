@@ -7,11 +7,17 @@ config.py — ค่าคอนฟิกกลางของ backend
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 # repo root = โฟลเดอร์แม่ของ src/
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# โหลดค่าจาก .env ถ้ามี (local dev เท่านั้น — production/Vercel ไม่มีไฟล์นี้ จึงเป็น no-op)
+load_dotenv(BASE_DIR / ".env")
+
 # connection string ของ PostgreSQL (สร้าง schema + seed ด้วย seed_database.py)
-# local dev default: ต้องมี postgres รันอยู่ + สร้าง database `finrisk_dev` ไว้ก่อน (createdb finrisk_dev)
+# ทีมใช้ shared dev DB ตัวเดียวกัน — ตั้ง DATABASE_URL ใน .env (ดู .env.example) ไม่งั้น fallback
+# เป็น postgres ในเครื่องตัวเอง (ต้อง createdb finrisk_dev เอง ข้อมูลจะไม่ sync กับคนอื่น)
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://localhost/finrisk_dev")
 
 # CORS: origin ของ frontend (คั่นด้วย comma) — localhost และ 127.0.0.1 เป็นคนละ origin ใน browser

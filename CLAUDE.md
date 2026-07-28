@@ -10,17 +10,25 @@ Stack: **Python 3.10+ / FastAPI / PostgreSQL (psycopg 3)** ไม่มี ORM
 
 ## คำสั่งที่ใช้บ่อย
 
+ทีมใช้ **shared dev Postgres ตัวเดียวกัน** (ไม่ใช่ localhost ของแต่ละคน) เพื่อให้ข้อมูลที่แก้ผ่าน
+API (เช่น เพิ่ม/ลบผู้ใช้ใน User Management) sync กันเห็นตรงกันทุกเครื่อง — ขอ connection string
+จากทีมแล้วคัดลอก `.env.example` เป็น `.env` (ไม่ commit) ใส่ `DATABASE_URL=<connection string>`
+**ห้าม** ใช้ตัวเดียวกับ backend production บน Vercel เพราะ deploy จะรัน `seed_database.py --force`
+ลบข้อมูลทิ้งทุกครั้ง
+
 ```bash
-createdb finrisk_dev                   # ครั้งแรกเท่านั้น (ต้องมี postgres รันอยู่)
-pip install -r requirements.txt        # ติดตั้ง dependency ของ API (รวม psycopg)
-python seed_database.py                # สร้าง schema + seed + risk engine + validate
-python seed_database.py --force        # ลบตารางเดิมทั้งหมดแล้วสร้างใหม่
+cp .env.example .env                   # ครั้งแรกเท่านั้น แล้วใส่ DATABASE_URL ของ shared dev DB
+pip install -r requirements.txt        # ติดตั้ง dependency ของ API (รวม psycopg, python-dotenv)
+python seed_database.py                # ครั้งแรกเท่านั้น (คนแรกที่ตั้ง shared DB) — สร้าง schema + seed + risk engine + validate
+python seed_database.py --force        # ลบตารางเดิมทั้งหมดแล้วสร้างใหม่ (ระวัง — กระทบทุกคนที่ใช้ DB เดียวกัน)
 uvicorn src.main:app --reload          # รัน API dev server → /docs
 pytest -q                              # smoke test
 ```
 
-ตั้ง `DATABASE_URL` ถ้าไม่ใช้ default (`postgresql://localhost/finrisk_dev`) — ทั้ง API และ
-`seed_database.py` อ่านค่าเดียวกันจาก `src/config.py`
+ไม่มี `.env` หรือไม่ได้ตั้ง `DATABASE_URL` → fallback เป็น postgres ในเครื่องตัวเอง
+(`postgresql://localhost/finrisk_dev`) ใช้ทดสอบคนเดียวได้ แต่ข้อมูลจะไม่ sync กับคนอื่น
+ทั้ง API และ `seed_database.py` อ่านค่าเดียวกันจาก `src/config.py` (โหลด `.env` ผ่าน
+`python-dotenv` อัตโนมัติ)
 
 ## สถาปัตยกรรม
 

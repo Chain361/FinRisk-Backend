@@ -28,4 +28,3 @@ pipeline_run.log
 !.env.example
 .vercel/
 .vercel
-.env*
