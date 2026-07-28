@@ -8,6 +8,10 @@ PyJWT==2.*              # ออก/ตรวจ JWT access token
 python-multipart==0.0.* # FastAPI Form/File (endpoint อัปโหลด CSV)
 google-genai==2.*       # Gemini API — chatbot orchestration (src/services/chatbot.py)
 python-dotenv==1.*      # โหลดค่าใน .env (เช่น DATABASE_URL ของ shared dev DB) ตอน local dev
+pinecone>=9,<10         # vector search เนื้อหาเอกสารเต็ม (integrated-inference index — ไม่ต้องเรียก embedding API เอง)
+                        # SDK 9 มี upsert_records/search ในตัว (ไม่ต้องลง pinecone-plugin-records)
+                        # ⚠️ SDK 9 คืน hit เป็น msgspec Struct (.id/.score/.fields) ไม่ใช่ dict คีย์ '_id'/'_score'
+                        #    แบบ SDK 7/8 — src/services/retrieval.py::_normalize_hit รองรับทั้งสองแบบไว้แล้ว
 
 # Dev / test
 httpx==0.28.*         # ใช้โดย fastapi.testclient (ปรับจาก 0.27 — google-genai บังคับ >=0.28)

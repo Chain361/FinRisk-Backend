@@ -90,7 +90,8 @@
 | `legal_refs/law_sections.csv` | `law_sections` | 9 มาตรา/ข้อ; `section_summary` เป็นสรุปเพื่อเดโม ⚠️ ให้ฝ่ายกฎหมายตรวจทานตัวบท/เลขมาตราก่อน production; `section_text` ว่างใน v1 |
 | `legal_refs/factor_legal_map.csv` | `factor_legal_map` | อ้าง (law_code, section_no); v1 ครอบ D1, L1, L2, L3 — A1 ไม่มีกฎหมาย (ตามไฟล์ case), A2/A3 เป็น phase ถัดไป |
 | `mock_documents/document_types.csv` | `document_types` | PR4/PR5/PR6; `provides_json` ใช้ตอบ "เอกสารใดระบุ X"; `required_for_project_type` ขับ L1 |
-| `mock_documents/project_documents.csv` | `project_documents` (+`document_chunks` อัตโนมัติสำหรับ status=present) | MOCK-CON-001 ครบ 3 ใบ (present), MOCK-CON-002 ขาด 3 ใบ (**seed แถว status='missing' explicit** — ไม่มีแถว ≠ ขาด) |
+| `mock_documents/project_documents.csv` | `project_documents` (+`document_chunks` อัตโนมัติสำหรับ status=present) | MOCK-CON-001 ครบ 3 ใบ (present), MOCK-CON-002 ขาด 3 ใบ (**seed แถว status='missing' explicit** — ไม่มีแถว ≠ ขาด); คอลัมน์ `file_path` ชี้ไฟล์ใน `raw_documents/` ให้ชั้น RAG ใช้ (seed อ่านเข้า `project_documents.file_path` ตรงๆ — **ไม่มีโค้ดอื่นที่ UPDATE คอลัมน์นี้**) |
+| `raw_documents/*.png` | `document_chunks` (ผ่าน `scripts/ingest_documents.py`) + Pinecone | ข้อความเต็มของเอกสาร ปร.4/5/6 — ingest **ลบ chunk เดิมของ doc_id นั้นแล้วเขียนทับ** (ของเดิมคือ `summary_text` ที่ seed ใส่ไว้เป็น chunk_no=1) `embedding` ยังเป็น NULL เสมอ เวกเตอร์อยู่ที่ Pinecone; ingest **ไม่แตะ `project_documents`** จึงไม่กระทบ L1/L3 — ดู `docs/rag_pinecone_plan.md` §4.4 ⚠️ **`src/services/retrieval.py` ไม่อ่านตารางนี้เลย** (ข้อความมาจาก Pinecone) เพราะ `seed_database.py --force` ล้างตารางนี้ทุก deploy — ตารางนี้มีไว้ debug/diff และเผื่อย้ายไป pgvector เท่านั้น |
 | `mock_documents/document_findings.csv` | `document_findings` | `finding_key` (FND1–3) ใช้ join ภายใน CSV เท่านั้น ไม่ลง DB |
 | `mock_documents/finding_legal_map.csv` | `finding_legal_map` | อ้าง finding_key + (law_code, section_no) |
 

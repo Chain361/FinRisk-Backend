@@ -22,6 +22,7 @@ from .config import (
     JWT_ALGORITHM,
     JWT_SECRET,
     JWT_SECRET_DEFAULT,
+    PINECONE_API_KEY,
 )
 from .database import _connect
 from .routers import (
@@ -54,6 +55,12 @@ if JWT_SECRET == JWT_SECRET_DEFAULT:
     )
 if not GEMINI_API_KEY:
     log.warning("GEMINI_API_KEY ยังไม่ได้ตั้งค่า — POST /chatbot จะตอบ 503 จนกว่าจะตั้ง env var นี้")
+if not PINECONE_API_KEY:
+    # feature flag: ไม่มีคีย์ = ไม่ประกาศ tool ค้นเอกสารให้ Gemini เลย (ระบบเดิม tool 5 ตัวทำงานครบ)
+    log.warning(
+        "PINECONE_API_KEY ยังไม่ได้ตั้งค่า — chatbot จะไม่มี tool ค้นเนื้อหาเอกสารเต็ม "
+        "และ GET /projects/{id}/documents/search จะตอบ 503"
+    )
 
 app = FastAPI(title=API_TITLE, version=API_VERSION)
 

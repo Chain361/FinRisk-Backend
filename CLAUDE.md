@@ -23,12 +23,25 @@ python seed_database.py                # ครั้งแรกเท่าน
 python seed_database.py --force        # ลบตารางเดิมทั้งหมดแล้วสร้างใหม่ (ระวัง — กระทบทุกคนที่ใช้ DB เดียวกัน)
 uvicorn src.main:app --reload          # รัน API dev server → /docs
 pytest -q                              # smoke test
+
+# ชั้น RAG (ทางเลือก — ข้ามได้ ระบบเดิมทำงานครบ) ต้องมี TYPHOON_OCR_API_KEY + PINECONE_API_KEY ใน .env
+python -m scripts.ingest_documents --project MOCK-CON-001 --dry-run   # OCR+chunk+นับ token ไม่เขียนอะไร
+python -m scripts.ingest_documents --project MOCK-CON-001             # upsert Pinecone + document_chunks
+python -m scripts.calibrate_rag                                       # หาค่า RAG_MIN_SCORE จาก chunk จริง
+curl -H "Authorization: Bearer <token>" \
+  "http://127.0.0.1:8000/projects/MOCK-CON-001/documents/search?q=Factor%20F&min_score=0"  # smoke test RAG
 ```
 
 ไม่มี `.env` หรือไม่ได้ตั้ง `DATABASE_URL` → fallback เป็น postgres ในเครื่องตัวเอง
 (`postgresql://localhost/finrisk_dev`) ใช้ทดสอบคนเดียวได้ แต่ข้อมูลจะไม่ sync กับคนอื่น
 ทั้ง API และ `seed_database.py` อ่านค่าเดียวกันจาก `src/config.py` (โหลด `.env` ผ่าน
 `python-dotenv` อัตโนมัติ)
+
+**env vars:** `src/config.py` โหลด `.env` ที่ repo root ให้อัตโนมัติตอน import (`load_dotenv()`)
+ลำดับความสำคัญ: **env จาก shell/Vercel ชนะ `.env` เสมอ** (ใช้ `os.environ.setdefault`)
+ใส่คีย์ใหม่ที่ `.env` ได้เลย ไม่ต้อง export เอง — `.env` อยู่ใน `.gitignore` ห้าม commit
+คีย์ที่ใช้: `DATABASE_URL`, `JWT_SECRET`, `GEMINI_API_KEY`, `PINECONE_API_KEY`, `TYPHOON_OCR_API_KEY`,
+`RAG_TOP_K`, `RAG_MIN_SCORE`, `RAG_MAX_CHUNK_TOKENS`
 
 ## สถาปัตยกรรม
 
@@ -53,6 +66,16 @@ pytest -q                              # smoke test
 - `src/routers/*.py` — endpoint แยกตามโดเมน: `auth, subdistricts, projects, risk, audit, financials,
   admin, users, notifications, public, legal (2 routers), documents (2 routers), chatbot`
   (ครบตามที่ include ใน `main.py`)
+
+- `scripts/ingest_documents.py` — offline CLI: OCR เอกสาร ปร.4/5/6 จาก `raw_documents/` → chunk →
+  upsert ขึ้น Pinecone (+ สำเนาลง `document_chunks`) **ไม่อยู่ใน request path และไม่เขียน
+  `project_documents` เลย** (§4.4 ของ `docs/rag_pinecone_plan.md`) — สถานะรวมของงาน RAG อยู่ที่ §0.1
+  ของเอกสารนั้น
+- `src/services/retrieval.py` — ชั้น query ของ RAG: ค้น Pinecone (integrated inference — **ไม่เรียก
+  embedding API เอง และห้ามเติม prefix `query:`/`passage:` เอง**) แล้ว **post-verify กับ Postgres เสมอ**
+  ก่อนคืนผล ใช้โดย `GET /projects/{id}/documents/search` และ tool ตัวที่ 6 ของ chatbot
+  `PINECONE_API_KEY` ว่าง = ปิดทั้งสองทางโดยไม่กระทบระบบเดิม (`rag_enabled()`)
+- `scripts/calibrate_rag.py` — offline CLI หาค่า `RAG_MIN_SCORE` (อ่านอย่างเดียว ไม่แก้ไฟล์ใด)
 
 **Data flow:** CSV (`standardized_data/`) → `seed_database.py` เขียนลง PostgreSQL (ตาม `DATABASE_URL`)
 → risk engine ใน seed คำนวณและเขียนตาราง `*_risk_results` / `project_risk_scores`
@@ -82,6 +105,9 @@ function-calling เท่านั้น การ์ดสิทธิ์จ�
   role ตาม `roles.md` (seed ลงตาราง `roles`): `local_executive/project_auditor/risk_analyst`
   เห็นเฉพาะตำบลตัวเอง; `admin/regional_supervisor/public_user` เห็นทุกตำบล
   สิทธิ์ราย endpoint บังคับที่ app layer ด้วย `require_roles(...)`
+- **ข้อมูลที่มาจากนอก Postgres (เช่น Pinecone) ต้อง post-verify กับ Postgres ก่อนคืนผู้ใช้เสมอ** —
+  metadata ที่ copy ไว้ตอน ingest ไม่ใช่หลักฐานสิทธิ์ ดูตัวอย่างที่ `src/services/retrieval.py`
+  (`_verify_and_enrich`) และเทสต์ `test_search_post_verify_blocks_poisoned_hit`
 - ใช้ **parameterized query** เท่านั้น (`?` placeholder) ห้าม f-string ค่าที่มาจาก user
   (การ interpolate ที่มีตอนนี้เป็นแค่จำนวน placeholder `?` ไม่ใช่ค่า)
 - router ใหม่: สร้างใน `src/routers/`, ตั้ง `APIRouter(prefix=..., tags=[...])`,
@@ -122,6 +148,16 @@ function-calling เท่านั้น การ์ดสิทธิ์จ�
 
 - ต่อ `ocr_pipeline/` เข้าชั้นเอกสาร — ตอนนี้ `project_documents`/`document_findings`
   เป็น `source='mock'` ทั้งหมด ยังไม่มีแถว `source='ocr'`
+  (`scripts/ingest_documents.py` ใช้ OCR แต่ผลลงแค่ Pinecone/`document_chunks` **ไม่แตะ provenance
+  ของแถวเอกสาร** — ค่าที่ OCR/LLM สกัดได้ห้ามไหลเข้า `extracted_json`/`document_findings` อัตโนมัติ
+  ต้องมี review gate ก่อน)
+- ชั้น RAG ต่อครบแล้ว (ingest → retrieval → endpoint → tool ตัวที่ 6 → citations + เทสต์)
+  **เหลือ 2 อย่าง**: (1) calibrate `RAG_MIN_SCORE` — ค่า 0.82 ที่ใช้อยู่ยังเป็นค่าเดา
+  ต้องรัน `python -m scripts.calibrate_rag` ในเครื่องที่ต่อ Pinecone ได้แล้วตั้งค่าใน `.env`
+  (2) ตั้ง env บน Vercel ซึ่งติด blocker ข้อแรกอยู่ — ดู `docs/rag_pinecone_plan.md` §0.1
+- ถ้า ingest รอบใหม่ได้ chunk **น้อยลง**กว่ารอบก่อน record เบอร์ท้ายๆ ของรอบเก่าจะค้างบน Pinecone
+  (post-verify กรองไม่ออกเพราะ `project_id`/`doc_type_code` ยังถูกต้อง — จะโผล่มาเป็น chunk เก่า)
+  ยังไม่มีขั้นตอนลบส่วนเกิน เอกสารชุด demo คงที่จึงยังไม่กระทบ
 - `GET /audit/feedback` + `GET /audit/feedback/{project_id}` คืน feedback สถานะ `draft`
   ของ auditor คนอื่นให้ทุก role ใน scope เห็น (รวม `local_executive` ซึ่งเป็นฝ่ายถูกตรวจ)
   — ควร filter ให้ draft เห็นเฉพาะเจ้าของ (issue #30)
