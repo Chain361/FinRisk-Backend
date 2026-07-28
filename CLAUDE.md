@@ -24,7 +24,7 @@ python seed_database.py --force        # ลบตารางเดิมทั
 uvicorn src.main:app --reload          # รัน API dev server → /docs
 pytest -q                              # smoke test
 
-# ชั้น RAG (ทางเลือก — ข้ามได้ ระบบเดิมทำงานครบ) ต้องมี TYPHOON_OCR_API_KEY + PINECONE_API_KEY ใน .env
+# ชั้น RAG (บังคับตั้งค่า PINECONE_API_KEY ใน .env) ต้องมี TYPHOON_OCR_API_KEY + PINECONE_API_KEY ใน .env
 python -m scripts.ingest_documents --project MOCK-CON-001 --dry-run   # OCR+chunk+นับ token ไม่เขียนอะไร
 python -m scripts.ingest_documents --project MOCK-CON-001             # upsert Pinecone + document_chunks
 python -m scripts.calibrate_rag                                       # หาค่า RAG_MIN_SCORE จาก chunk จริง
@@ -74,7 +74,7 @@ curl -H "Authorization: Bearer <token>" \
 - `src/services/retrieval.py` — ชั้น query ของ RAG: ค้น Pinecone (integrated inference — **ไม่เรียก
   embedding API เอง และห้ามเติม prefix `query:`/`passage:` เอง**) แล้ว **post-verify กับ Postgres เสมอ**
   ก่อนคืนผล ใช้โดย `GET /projects/{id}/documents/search` และ tool ตัวที่ 6 ของ chatbot
-  `PINECONE_API_KEY` ว่าง = ปิดทั้งสองทางโดยไม่กระทบระบบเดิม (`rag_enabled()`)
+  `PINECONE_API_KEY` จำเป็นต้องระบุ หากไม่มีจะ raise RuntimeError ตอนเริ่มระบบ (`src/main.py`)
 - `scripts/calibrate_rag.py` — offline CLI หาค่า `RAG_MIN_SCORE` (อ่านอย่างเดียว ไม่แก้ไฟล์ใด)
 
 **Data flow:** CSV (`standardized_data/`) → `seed_database.py` เขียนลง PostgreSQL (ตาม `DATABASE_URL`)
