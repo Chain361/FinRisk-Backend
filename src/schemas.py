@@ -64,6 +64,24 @@ class UserUpdate(BaseModel):
         return value
 
 
+class UserCreate(BaseModel):
+    username: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=6, max_length=200)
+    display_name: str | None = None
+    role: str
+    subdistrict_id: int | None = None
+    status: Literal["active", "disabled"] = "active"
+    allowed_features: list[str] = Field(default_factory=list)
+
+    @field_validator("allowed_features")
+    @classmethod
+    def _check_allowed_features(cls, value: list[str]) -> list[str]:
+        unknown = sorted(set(value) - ALLOWED_FEATURES)
+        if unknown:
+            raise ValueError(f"allowed_features ไม่รู้จัก: {', '.join(unknown)}")
+        return value
+
+
 class LoginResponse(BaseModel):
     token: str  # JWT access token — แนบเป็น "Authorization: Bearer <token>"
     user: UserOut
