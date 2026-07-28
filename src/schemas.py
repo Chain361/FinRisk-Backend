@@ -17,6 +17,7 @@ ALLOWED_FEATURES = frozenset({
     "projects_view",
     "filter_by_subdistrict",
     "public_audit_info",
+    "public_projects_export",
     "assign_audit_tasks",
     "team_reports",
     "chatbot",
