@@ -37,3 +37,9 @@ JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "480"))  # 8 ชั่�
 # รหัสผ่านทุก mock user = "password123" เก็บเป็น bcrypt hash (มี salt ในตัว) — ดู CLAUDE.md หัวข้อ Auth
 API_TITLE = "Local Budget Fraud Risk Assistant API"
 API_VERSION = "0.1.0"
+
+# Gemini API (Google AI Studio) — ใช้ขับเคลื่อน chatbot (src/services/chatbot.py)
+# ⚠️ ต้องตั้ง env var เอง ไม่มี default ที่ใช้งานได้จริง — ถ้าว่างจะมี warning log ตอน startup
+# (ดู main.py) และ POST /chatbot จะตอบ 503 จนกว่าจะตั้งค่า
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")

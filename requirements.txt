@@ -6,9 +6,10 @@ psycopg[binary]==3.*   # PostgreSQL driver — ใช้ทั้ง API แล�
 bcrypt==4.*             # password hashing (มี salt ในตัว)
 PyJWT==2.*              # ออก/ตรวจ JWT access token
 python-multipart==0.0.* # FastAPI Form/File (endpoint อัปโหลด CSV)
+google-genai==2.*       # Gemini API — chatbot orchestration (src/services/chatbot.py)
 
 # Dev / test
-httpx==0.27.*        # ใช้โดย fastapi.testclient
+httpx==0.28.*         # ใช้โดย fastapi.testclient (ปรับจาก 0.27 — google-genai บังคับ >=0.28)
 pytest==8.*
 
 # Data extraction / ocr_pipeline

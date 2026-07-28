@@ -144,3 +144,14 @@ class DataUploadOut(BaseModel):
     projects_inserted: int
     projects_skipped_duplicate: list[str]
     financial_rows_inserted: int
+
+
+class ChatTurn(BaseModel):
+    role: Literal["user", "model"]
+    text: str = Field(min_length=1, max_length=4000)
+
+
+class ChatMessageRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+    # ประวัติแชทฝั่ง client ถืออยู่ ส่งมาทุกครั้ง — backend ไม่เก็บ conversation state
+    history: list[ChatTurn] = Field(default_factory=list, max_length=40)

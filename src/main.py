@@ -13,15 +13,39 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from .audit_log import record_access, should_log
-from .config import API_TITLE, API_VERSION, CORS_ORIGINS, JWT_ALGORITHM, JWT_SECRET, JWT_SECRET_DEFAULT
+from .config import (
+    API_TITLE,
+    API_VERSION,
+    CORS_ORIGINS,
+    GEMINI_API_KEY,
+    JWT_ALGORITHM,
+    JWT_SECRET,
+    JWT_SECRET_DEFAULT,
+)
 from .database import _connect
-from .routers import admin, audit, auth, documents, financials, legal, projects, risk, subdistricts, users
+from .routers import (
+    admin,
+    audit,
+    auth,
+    chatbot,
+    documents,
+    financials,
+    legal,
+    notifications,
+    projects,
+    public,
+    risk,
+    subdistricts,
+    users,
+)
 
 log = logging.getLogger("finrisk.main")
 if JWT_SECRET == JWT_SECRET_DEFAULT:
     log.warning(
         "JWT_SECRET ยังเป็นค่า default ที่ไม่ปลอดภัย — ตั้ง env var JWT_SECRET เป็นค่าสุ่มยาวๆ ก่อนขึ้น production"
     )
+if not GEMINI_API_KEY:
+    log.warning("GEMINI_API_KEY ยังไม่ได้ตั้งค่า — POST /chatbot จะตอบ 503 จนกว่าจะตั้ง env var นี้")
 
 app = FastAPI(title=API_TITLE, version=API_VERSION)
 
@@ -85,6 +109,7 @@ app.include_router(legal.router)
 app.include_router(legal.project_router)
 app.include_router(documents.router)
 app.include_router(documents.project_router)
+app.include_router(chatbot.router)
 
 
 @app.get("/health", tags=["meta"])
