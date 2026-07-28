@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """/risk — ผลการประเมินความเสี่ยง (project + annual) และรายการ risk factor"""
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from ..auth import get_current_user, scope_subdistrict_ids
 from ..database import Connection, get_db, rows_to_dicts
@@ -53,6 +53,9 @@ def annual_results(
 
 @router.get("/summary")
 def summary(
+    budget_year: int | None = Query(default=None),
+    subdistrict_id: int | None = Query(default=None),
+    risk_level: str | None = Query(default=None, pattern="^(low|medium|high)$"),
     user: dict = Depends(get_current_user),
     conn: Connection = Depends(get_db),
 ):
@@ -65,6 +68,15 @@ def summary(
             return {"total": 0, "by_level": {}}
         where.append(f"p.subdistrict_id IN ({','.join('?' * len(allowed))})")
         params += allowed
+    if subdistrict_id is not None:
+        where.append("p.subdistrict_id = ?")
+        params.append(subdistrict_id)
+    if budget_year is not None:
+        where.append("p.budget_year = ?")
+        params.append(budget_year)
+    if risk_level is not None:
+        where.append("s.risk_level = ?")
+        params.append(risk_level)
     sql = f"""
         SELECT s.risk_level, COUNT(*) AS n
         FROM project_risk_scores s
