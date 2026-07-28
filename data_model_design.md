@@ -509,6 +509,8 @@ CREATE TABLE log_retention_runs (
 
 **API:** `POST /admin/log-retention/run` รัน archive/delete ตาม policy, `POST /admin/log-retention/holds` ตั้ง hold, และ `GET /audit/access-log/archive` อ่าน archive ที่ถูกบีบอัดแล้วโดย decode เป็น JSON ให้ admin. สำหรับ DB ที่มีข้อมูลเดิมให้รัน `migrations/20260728_log_retention.sql` ด้วย role ที่มีสิทธิ์ create table/index แทนการ seed ใหม่ทั้งฐาน.
 
+**Scheduled job:** `.github/workflows/log-retention.yml` รัน `python scripts/run_log_retention.py --triggered-by github-actions` อัตโนมัติทุกวันเวลา 01:30 Asia/Bangkok (18:30 UTC) และรองรับ `workflow_dispatch` เพื่อกดรันเองได้. ต้องตั้ง repository secret ชื่อ `DATABASE_URL` ให้ชี้ production/shared DB; scheduled workflows จะเริ่มทำงานจาก default branch หลัง merge.
+
 ### 6.5 `notifications` — แจ้งเตือนผู้ใช้ (#19, หลักฐานว่า "แจ้งแล้วเมื่อไหร่")
 
 ```sql

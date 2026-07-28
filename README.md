@@ -106,6 +106,24 @@ uvicorn src.main:app --reload
 > DB connection อ่านจาก env var `DATABASE_URL` (default: `postgresql://localhost/finrisk_dev`)
 > ตั้งค่าต่างออกไปได้ถ้า database ชื่ออื่น/อยู่เครื่องอื่น — ดู `src/config.py`
 
+### Log retention scheduled job
+
+Access/security audit logs use the 90/365 day policy in `app_config`:
+`log_retention_hot_days = 90` and `log_retention_archive_days = 365`.
+
+Manual run:
+
+```bash
+python scripts/run_log_retention.py --triggered-by manual
+```
+
+Automatic run:
+
+- `.github/workflows/log-retention.yml` runs daily at 18:30 UTC / 01:30 Asia/Bangkok.
+- Set repository secret `DATABASE_URL` to the target DB connection string.
+- GitHub scheduled workflows run from the default branch after this workflow is merged.
+- The workflow also supports `workflow_dispatch` for manual runs from GitHub Actions.
+
 ---
 
 ## 3. โครงสร้างโฟลเดอร์
@@ -175,6 +193,8 @@ data_modelling/
 อนุมัติขั้นสุดท้ายโดย `regional_supervisor`), `assignment_status_history`, `auditor_feedback`
 (CRUD + resolve workflow ใช้งานจริงแล้ว), `notifications` (bell icon ฝั่ง frontend),
 `access_log` (accountability trail, admin ดูได้ที่ `GET /audit/access-log`)
+และ log retention tables (`access_log_archive`, `access_log_holds`, `log_retention_runs`)
+สำหรับ archive/delete ตาม policy 90/365 วัน
 > `audit_reports` มีอยู่ใน schema แต่ไม่มีโค้ดใดอ้างอิงถึงแล้ว — ถูกแทนที่ด้วย `auditor_feedback`
 > เก็บไว้เป็น legacy ยังไม่ได้ลบ
 
@@ -352,5 +372,6 @@ cp -r ocr_pipeline/work/t67/ocr pipeline/ocr_output/thachang67
   ทั้งหมด) — ก่อนให้ finding จาก OCR/LLM ขยับ risk score ต้องเพิ่ม review gate ให้คนยืนยันก่อน
 - curate mapping กฎหมายของ A2/A3 (ตอนนี้ยังไม่มี → chatbot ตอบ "ยังไม่มีการเชื่อมโยงข้อกฎหมาย")
 - `POST /chatbot` ยังไม่มี rate limit ต่อ user — เสี่ยง cost บานถ้ามีคนยิงรัว (issue #32)
-- log retention policy (archive/delete ตามอายุ `access_log`) ยังไม่มีโค้ด/migration ใดๆ ในนี้เลย
+- PDPA/privacy workflow สำหรับ vendor/project personal-data inventory, masking policy,
+  privacy notice, และ data-subject request process ยังเป็น backlog แยกจาก log retention
   (backlog, issue #28)
