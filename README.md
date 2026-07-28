@@ -367,6 +367,14 @@ curl -X PATCH http://127.0.0.1:8000/audit/assignments/1/status \
 # open data export — ไม่ต้อง scope guard ตำบล แต่ role-gate เฉพาะ admin/regional_supervisor/public_user
 curl "http://127.0.0.1:8000/public/projects/export?format=csv" -H "Authorization: Bearer $TOKEN"
 
+# ทะเบียนความเสี่ยง — Excel ตาม scope ของผู้ใช้ที่ login
+curl "http://127.0.0.1:8000/risk/register/export?format=xlsx" \
+  -H "Authorization: Bearer $TOKEN" --output finrisk_risk_register.xlsx
+
+# รายงานผลตรวจ — PDF หรือ Excel ตาม scope ของโครงการ
+curl "http://127.0.0.1:8000/audit/reports/1/export?format=pdf" \
+  -H "Authorization: Bearer $TOKEN" --output finrisk_audit_report.pdf
+
 # chatbot — admin/project_auditor/risk_analyst เท่านั้น รายละเอียด orchestration/guardrail ดู
 # docs/chatbot_architecture.md (ต้องตั้ง env var GEMINI_API_KEY ก่อน ไม่งั้นได้ 503)
 curl -X POST http://127.0.0.1:8000/chatbot \
