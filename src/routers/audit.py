@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """Audit assignments, workflow history, feedback, and access-log endpoints."""
+import os
 from datetime import date, datetime, timedelta, timezone
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 
 from ..auth import require_roles, scope_subdistrict_ids
 from ..database import Connection, SqliteLikeRow, get_db, rows_to_dicts
@@ -11,8 +13,11 @@ from ..schemas import (
     AssignmentCreate,
     AssignmentStatusUpdate,
     AssignmentUpdate,
+    AttachmentOut,
     AuditorFeedbackIn,
     AuditorFeedbackOut,
+    ClarificationCreate,
+    ClarificationOut,
 )
 
 router = APIRouter(prefix="/audit", tags=["audit"])
@@ -121,6 +126,48 @@ def _assignment_in_scope(conn: Connection, assignment_id: int, user: dict) -> Sq
     if scope is not None and assignment["subdistrict_id"] not in scope:
         raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์เข้าถึงงานนอกพื้นที่ของคุณ")
     return assignment
+
+
+ALLOWED_ATTACHMENT_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".docx", ".xlsx"}
+MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024  # 10MB — เก็บเป็น BYTEA ตรงๆ ใน Postgres ไม่มี object storage
+ATTACHMENT_SELECT = """
+    SELECT a.attachment_id, a.assignment_id, a.file_name, a.content_type, a.file_size,
+           a.uploaded_by, u.display_name AS uploaded_by_display_name, a.created_at
+    FROM assignment_attachments a
+    JOIN users u ON u.user_id = a.uploaded_by
+"""
+CLARIFICATION_SELECT = """
+    SELECT c.clarification_id, c.assignment_id, c.message_text,
+           c.created_by, u.display_name AS created_by_display_name, c.created_at
+    FROM assignment_clarifications c
+    JOIN users u ON u.user_id = c.created_by
+"""
+
+
+def _notify_other_party(conn: Connection, assignment: SqliteLikeRow, actor: dict, notif_type: str, message: str) -> None:
+    """แจ้งเตือนอีกฝ่ายของ assignment (risk_analyst ↔ project_auditor ที่มอบหมายงาน) ไม่แจ้งตัวเอง"""
+    other_user_id = (
+        assignment["assigned_by"] if actor["user_id"] == assignment["assigned_to"] else assignment["assigned_to"]
+    )
+    create_notification(conn, other_user_id, notif_type, message, "assignment", assignment["assignment_id"])
+
+
+def _fetch_attachment_meta(conn: Connection, attachment_id: int) -> dict:
+    row = conn.execute(ATTACHMENT_SELECT + " WHERE a.attachment_id = ?", (attachment_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="ไม่พบไฟล์แนบ")
+    return dict(row)
+
+
+def _attachment_in_scope(conn: Connection, assignment_id: int, attachment_id: int, user: dict) -> SqliteLikeRow:
+    _assignment_in_scope(conn, assignment_id, user)
+    row = conn.execute(
+        "SELECT * FROM assignment_attachments WHERE attachment_id = ? AND assignment_id = ?",
+        (attachment_id, assignment_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="ไม่พบไฟล์แนบ")
+    return row
 
 
 def _assignee_for_project(conn: Connection, assignee_id: int, project: SqliteLikeRow) -> SqliteLikeRow:
@@ -342,6 +389,131 @@ def delete_assignment(
     conn.execute("DELETE FROM assignments WHERE assignment_id = ?", (assignment_id,))
     conn.commit()
     return None
+
+
+@router.post("/assignments/{assignment_id}/attachments", response_model=AttachmentOut, status_code=201)
+async def upload_attachment(
+    assignment_id: int,
+    file: UploadFile = File(...),
+    user: dict = Depends(require_roles("admin", "project_auditor", "risk_analyst")),
+    conn: Connection = Depends(get_db),
+):
+    """แนบไฟล์หลักฐาน (evidence) — เก็บเป็น BYTEA ตรงๆ ใน Postgres (ไม่มี object storage ในระบบ)"""
+    assignment = _assignment_in_scope(conn, assignment_id, user)
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in ALLOWED_ATTACHMENT_EXTENSIONS:
+        raise HTTPException(status_code=422, detail=f"ไม่รองรับไฟล์นามสกุล {ext or '(ไม่ทราบ)'}")
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=422, detail="ไฟล์ว่างเปล่า")
+    if len(content) > MAX_ATTACHMENT_SIZE:
+        raise HTTPException(status_code=413, detail="ไฟล์ต้องมีขนาดไม่เกิน 10MB")
+    cursor = conn.execute(
+        """INSERT INTO assignment_attachments
+           (assignment_id, file_name, content_type, file_size, file_content, uploaded_by)
+           VALUES (?,?,?,?,?,?)
+           RETURNING attachment_id""",
+        (
+            assignment_id,
+            file.filename,
+            file.content_type or "application/octet-stream",
+            len(content),
+            content,
+            user["user_id"],
+        ),
+    )
+    attachment_id = cursor.fetchone()["attachment_id"]
+    _notify_other_party(
+        conn, assignment, user, "attachment",
+        f"มีไฟล์หลักฐานใหม่แนบในงานตรวจสอบโครงการ {assignment['project_id']}: {file.filename}",
+    )
+    conn.commit()
+    return _fetch_attachment_meta(conn, attachment_id)
+
+
+@router.get("/assignments/{assignment_id}/attachments", response_model=list[AttachmentOut])
+def list_attachments(
+    assignment_id: int,
+    user: dict = Depends(require_roles("admin", "regional_supervisor", "project_auditor", "risk_analyst")),
+    conn: Connection = Depends(get_db),
+):
+    _assignment_in_scope(conn, assignment_id, user)
+    rows = conn.execute(
+        ATTACHMENT_SELECT + " WHERE a.assignment_id = ? ORDER BY a.created_at DESC",
+        (assignment_id,),
+    ).fetchall()
+    return rows_to_dicts(rows)
+
+
+@router.get("/assignments/{assignment_id}/attachments/{attachment_id}/download")
+def download_attachment(
+    assignment_id: int,
+    attachment_id: int,
+    user: dict = Depends(require_roles("admin", "regional_supervisor", "project_auditor", "risk_analyst")),
+    conn: Connection = Depends(get_db),
+):
+    row = _attachment_in_scope(conn, assignment_id, attachment_id, user)
+    safe_name = quote(row["file_name"])
+    return Response(
+        content=bytes(row["file_content"]),
+        media_type=row["content_type"],
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{safe_name}"},
+    )
+
+
+@router.delete("/assignments/{assignment_id}/attachments/{attachment_id}", status_code=204)
+def delete_attachment(
+    assignment_id: int,
+    attachment_id: int,
+    user: dict = Depends(require_roles("admin", "project_auditor", "risk_analyst")),
+    conn: Connection = Depends(get_db),
+):
+    row = _attachment_in_scope(conn, assignment_id, attachment_id, user)
+    if row["uploaded_by"] != user["user_id"] and user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="ลบได้เฉพาะไฟล์ที่ตัวเองอัปโหลด")
+    conn.execute("DELETE FROM assignment_attachments WHERE attachment_id = ?", (attachment_id,))
+    conn.commit()
+    return Response(status_code=204)
+
+
+@router.get("/assignments/{assignment_id}/clarifications", response_model=list[ClarificationOut])
+def list_clarifications(
+    assignment_id: int,
+    user: dict = Depends(require_roles("admin", "regional_supervisor", "project_auditor", "risk_analyst")),
+    conn: Connection = Depends(get_db),
+):
+    _assignment_in_scope(conn, assignment_id, user)
+    rows = conn.execute(
+        CLARIFICATION_SELECT + " WHERE c.assignment_id = ? ORDER BY c.clarification_id",
+        (assignment_id,),
+    ).fetchall()
+    return rows_to_dicts(rows)
+
+
+@router.post("/assignments/{assignment_id}/clarifications", response_model=ClarificationOut, status_code=201)
+def create_clarification(
+    assignment_id: int,
+    payload: ClarificationCreate,
+    user: dict = Depends(require_roles("admin", "project_auditor", "risk_analyst")),
+    conn: Connection = Depends(get_db),
+):
+    assignment = _assignment_in_scope(conn, assignment_id, user)
+    cursor = conn.execute(
+        """INSERT INTO assignment_clarifications (assignment_id, message_text, created_by)
+           VALUES (?,?,?)
+           RETURNING clarification_id""",
+        (assignment_id, payload.message_text, user["user_id"]),
+    )
+    clarification_id = cursor.fetchone()["clarification_id"]
+    _notify_other_party(
+        conn, assignment, user, "clarification",
+        f"มีข้อความใหม่ในกระทู้ขอความชัดเจนของงานตรวจสอบโครงการ {assignment['project_id']}",
+    )
+    conn.commit()
+    row = conn.execute(
+        CLARIFICATION_SELECT + " WHERE c.clarification_id = ?", (clarification_id,)
+    ).fetchone()
+    return dict(row)
 
 
 @router.get("/feedback", response_model=list[AuditorFeedbackOut])
