@@ -3,6 +3,9 @@
 from .database import Connection
 
 
+NOTIFICATION_RECIPIENT_ROLES = {"project_auditor", "risk_analyst"}
+
+
 def create_notification(
     conn: Connection,
     user_id: int,
@@ -11,6 +14,9 @@ def create_notification(
     ref_type: str | None = None,
     ref_id: str | None = None,
 ) -> None:
+    recipient = conn.execute("SELECT role FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    if recipient is None or recipient["role"] not in NOTIFICATION_RECIPIENT_ROLES:
+        return
     conn.execute(
         """INSERT INTO notifications (user_id, type, message, ref_type, ref_id)
            VALUES (?,?,?,?,?)""",

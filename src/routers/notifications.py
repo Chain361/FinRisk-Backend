@@ -2,16 +2,17 @@
 """แจ้งเตือนของผู้ใช้ที่ล็อกอินอยู่ — เห็นเฉพาะของตัวเอง"""
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from ..auth import get_current_user
+from ..auth import require_roles
 from ..database import Connection, get_db, rows_to_dicts
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
+NOTIFICATION_ROLES = ("project_auditor", "risk_analyst")
 
 
 @router.get("")
 def list_notifications(
     unread: bool = Query(False),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_roles(*NOTIFICATION_ROLES)),
     conn: Connection = Depends(get_db),
 ):
     sql = "SELECT * FROM notifications WHERE user_id = ?"
@@ -30,7 +31,7 @@ def list_notifications(
 @router.patch("/{notification_id}/read")
 def mark_notification_read(
     notification_id: int,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_roles(*NOTIFICATION_ROLES)),
     conn: Connection = Depends(get_db),
 ):
     row = conn.execute(
@@ -51,7 +52,7 @@ def mark_notification_read(
 
 @router.post("/read-all")
 def mark_all_notifications_read(
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_roles(*NOTIFICATION_ROLES)),
     conn: Connection = Depends(get_db),
 ):
     conn.execute(

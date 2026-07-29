@@ -39,7 +39,7 @@ def load_project_in_scope(
     หาโครงการ + บังคับ scope guard ตาม role (roles.md)
 
     NotFoundError  → 404 (ไม่พบ project_id)
-    ForbiddenError → 403 (โครงการอยู่นอกตำบลที่ user เห็นได้)
+    ForbiddenError → 403 (โครงการอยู่นอกตำบลที่ user เห็นได้ หรือไม่ใช่งานที่ได้รับมอบหมาย)
     """
     # import ในฟังก์ชันเพื่อเลี่ยง circular import (auth → database → services)
     from ..auth import scope_subdistrict_ids
@@ -57,6 +57,13 @@ def load_project_in_scope(
     allowed = scope_subdistrict_ids(conn, user)
     if allowed is not None and row["subdistrict_id"] not in allowed:
         raise ForbiddenError("ไม่มีสิทธิ์เข้าถึงโครงการนอกตำบลของคุณ")
+    if user["role"] == "risk_analyst":
+        assignment = conn.execute(
+            "SELECT 1 FROM assignments WHERE project_id = ? AND assigned_to = ? LIMIT 1",
+            (project_id, user["user_id"]),
+        ).fetchone()
+        if assignment is None:
+            raise ForbiddenError("นักวิเคราะห์เห็นได้เฉพาะโครงการที่ได้รับมอบหมาย")
     return row
 
 
