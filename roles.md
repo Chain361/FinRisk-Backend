@@ -28,6 +28,7 @@
 - View Risk Dashboard
 - View Fiscal Health Dashboard
 - View Projects
+- View Project Workflow Status (read-only)
 - View Public Audit Information
 
 ### Data Scope
@@ -47,6 +48,7 @@
 - View Projects
 - Assign Audit Tasks
 - View Team Reports
+- View Workflow Notifications
 - Use Chatbot
 - View Public Audit Information
 
@@ -66,11 +68,12 @@
 - View Fiscal Health Dashboard
 - View Assigned Projects
 - Submit Audit Report
+- View Workflow Notifications
 - Use Chatbot
 - View Public Audit Information
 
 ### Data Scope
-- โครงการที่ได้รับมอบหมาย (หรือเฉพาะตำบลของตนเอง)
+- เฉพาะโครงการที่ตนได้รับมอบหมาย (รวมงานที่เสร็จแล้ว); ระบบไม่ให้เข้าถึงโครงการอื่นด้วย URL ตรง
 
 ---
 

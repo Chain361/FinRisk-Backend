@@ -127,11 +127,52 @@ def test_audit_assignments_role_gate():
     r = client.get("/audit/assignments", headers={"X-Username": "analyst1"})
     assert r.status_code == 200
     assert len(r.json()) == 1
-    assert r.json()[0]["status"] in ("in_progress", "under_review", "completed")
-    # local_executive / public_user ไม่มีสิทธิ์งาน assignment ตาม roles.md
-    for username in ("thachang_user", "public1"):
-        r = client.get("/audit/assignments", headers={"X-Username": username})
-        assert r.status_code == 403, username
+    assert r.json()[0]["status"] in ("waiting_acceptance", "in_progress", "under_review", "completed")
+    # อบต. อ่านสถานะ assignment ในตำบลของตัวเองได้ แต่ยังไม่มีสิทธิ์มอบหมายงาน.
+    local = client.get("/audit/assignments", headers={"X-Username": "thachang_user"})
+    assert local.status_code == 200
+    assert all(item["subdistrict_id"] == 1 for item in local.json())
+    existing = local.json()[0]
+    write_attempt = client.post(
+        "/audit/assignments",
+        headers={"X-Username": "thachang_user"},
+        json={"project_id": str(existing["project_id"]), "assignee_id": existing["assigned_to"]},
+    )
+    assert write_attempt.status_code == 403
+
+    r = client.get("/audit/assignments", headers={"X-Username": "public1"})
+    assert r.status_code == 403
+
+
+def test_risk_analyst_can_only_view_assigned_projects():
+    analyst_headers = {"X-Username": "analyst1"}
+    assigned_ids = {
+        str(item["project_id"])
+        for item in client.get("/audit/assignments", headers=analyst_headers).json()
+    }
+    visible = client.get("/projects", headers=analyst_headers)
+    assert visible.status_code == 200
+    assert {str(project["project_id"]) for project in visible.json()} == assigned_ids
+
+    # เลือกโครงการอื่นในตำบลเดียวกัน เพื่อยืนยันว่าเข้าผ่านด้วย URL ตรงไม่ได้.
+    same_subdistrict_projects = client.get(
+        "/projects", headers={"X-Username": "auditor1"}
+    ).json()
+    hidden = next(
+        project
+        for project in same_subdistrict_projects
+        if str(project["project_id"]) not in assigned_ids
+    )
+    assert client.get(f"/projects/{hidden['project_id']}", headers=analyst_headers).status_code == 403
+    assert client.get(
+        f"/risk/projects/{hidden['project_id']}/legal", headers=analyst_headers
+    ).status_code == 403
+
+
+def test_notifications_are_limited_to_workflow_roles():
+    for username in ("admin", "supervisor1", "thachang_user", "public1"):
+        response = client.get("/notifications", headers={"X-Username": username})
+        assert response.status_code == 403, username
 
 
 def test_public_user_cannot_view_audit_feedback():
