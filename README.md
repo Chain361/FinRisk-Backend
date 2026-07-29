@@ -190,7 +190,7 @@ data_modelling/
 │  ├─ database.py               # ตัวช่วยต่อ PostgreSQL (dependency get_db)
 │  ├─ auth.py                   # login (bcrypt + JWT) + role/scope guard
 │  ├─ schemas.py                # Pydantic models
-│  ├─ notify.py                 # create_notification() — helper insert-only ใช้โดย audit.py/admin.py
+│  ├─ notify.py                 # create_notification() — helper insert-only ใช้โดย audit.py
 │  ├─ services/                 # service function (contract ที่ router + chatbot ใช้ร่วมกัน)
 │  │  ├─ common.py              # scope guard + latest_run_id + domain error (ServiceError/NotFoundError/ForbiddenError)
 │  │  ├─ projects.py            # list_projects_view / project_summary_view
@@ -204,7 +204,7 @@ data_modelling/
 │     ├─ subdistricts.py        # /subdistricts
 │     ├─ projects.py            # /projects (+ risk score ล่าสุด)
 │     ├─ risk.py                # /risk/factors, /risk/annual, /risk/summary
-│     ├─ audit.py               # /audit/assignments (approval chain), /audit/feedback, /audit/access-log
+│     ├─ audit.py               # /audit/assignments (feedback workflow), /audit/feedback, /audit/access-log
 │     ├─ financials.py          # /financial-statements, /financials
 │     ├─ admin.py               # /admin/data/upload, /admin/risk-engine/run (admin เท่านั้น)
 │     ├─ users.py               # /users — admin จัดการ role/subdistrict/allowed_features
@@ -249,10 +249,11 @@ data_modelling/
 **Risk results** (เขียนโดย engine ทุก run) — `assessment_runs`, `project_risk_results`,
 `project_risk_scores`, `annual_risk_results`
 
-**Audit workflow + notifications** — `assignments` (approval chain: `waiting_acceptance` →
-`accepted`/`in_progress` → `ready_for_review` → `under_review` → `pending_approval` → `completed`,
-อนุมัติขั้นสุดท้ายโดย `regional_supervisor`), `assignment_status_history`, `auditor_feedback`
-(CRUD + resolve workflow ใช้งานจริงแล้ว), `notifications` (bell icon ฝั่ง frontend),
+**Audit workflow + notifications** — โครงการที่ไม่มี assignment มีสถานะ `รอมอบหมาย`; เมื่อผู้ตรวจสอบ
+มอบหมายงานจะเป็น `in_progress` (`กำลังดำเนินการ`) และแจ้งนักวิเคราะห์, นักวิเคราะห์ส่ง feedback
+จะเป็น `under_review` (`อยู่ระหว่างสอบทาน`) และแจ้งผู้ตรวจสอบ, จากนั้นผู้ตรวจสอบอนุมัติ feedback
+จึงเป็น `completed` (`เสร็จสิ้น`) และแจ้งนักวิเคราะห์ พร้อม `assignment_status_history` และ
+`auditor_feedback`. Notification สงวนเฉพาะ 3 transition นี้,
 `access_log` (accountability trail, admin ดูได้ที่ `GET /audit/access-log`)
 และ log retention tables (`access_log_archive`, `access_log_holds`, `log_retention_runs`,
 `error_debug_log`)
@@ -300,7 +301,7 @@ mock users ทั้งหมดรหัสผ่านเดียวกัน
 | `supervisor1` | regional_supervisor | ทุกตำบล เปรียบเทียบข้ามตำบลได้ |
 | `thachang_user` / `pingkhong_user` / `yonok_user` | local_executive | **เฉพาะตำบลของตัวเอง** |
 | `auditor1` / `auditor2` / `auditor3` | project_auditor | เฉพาะตำบลของตัวเอง + มอบหมายงานตรวจสอบ |
-| `analyst1` / `analyst2` / `analyst3` | risk_analyst | เฉพาะตำบลของตัวเอง + รับงานที่ได้รับมอบหมาย + ส่งรายงานผลตรวจ |
+| `analyst1` / `analyst2` / `analyst3` | risk_analyst | เฉพาะตำบลของตัวเอง + ดำเนินการตรวจสอบและส่ง feedback |
 | `public1` | public_user | ทุกตำบล (read-only, **ไม่เห็นข้อมูลที่ถูกปิดไว้** เช่น `/audit/*`) |
 
 การจำกัด scope อยู่ที่ `src/auth.py` → `scope_subdistrict_ids()` ทุก endpoint ที่คืนข้อมูลตำบล
@@ -359,10 +360,9 @@ curl -X POST http://127.0.0.1:8000/admin/data/upload \
 # แจ้งเตือน — unread count + list
 curl http://127.0.0.1:8000/notifications?unread=true -H "Authorization: Bearer $TOKEN"
 
-# มอบหมายงาน/อนุมัติ (approval chain) — เปลี่ยนสถานะ assignment
-curl -X PATCH http://127.0.0.1:8000/audit/assignments/1/status \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"status":"accepted"}'
+# Workflow งาน: POST /audit/assignments → in_progress (กำลังดำเนินการ)
+# นักวิเคราะห์ส่ง submitted feedback → under_review (อยู่ระหว่างสอบทาน)
+# ผู้ตรวจสอบ PATCH /audit/feedback/{feedback_id}/resolve → completed (เสร็จสิ้น)
 
 # open data export — ไม่ต้อง scope guard ตำบล แต่ role-gate เฉพาะ admin/regional_supervisor/public_user
 curl "http://127.0.0.1:8000/public/projects/export?format=csv" -H "Authorization: Bearer $TOKEN"

@@ -357,9 +357,8 @@ CREATE TABLE assignments (
     due_date      TEXT,
     budget_hours  REAL,
     audit_steps   TEXT NOT NULL DEFAULT '',
-    status        TEXT NOT NULL DEFAULT 'waiting_acceptance' CHECK (status IN (
-        'waiting_acceptance','accepted','in_progress','clarification_needed',
-        'ready_for_review','under_review','pending_approval','revision_requested','completed'
+    status        TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN (
+        'in_progress','under_review','completed'
     )),
     created_at    TEXT NOT NULL DEFAULT (now_text()),
     updated_at    TEXT NOT NULL DEFAULT (now_text())
@@ -367,13 +366,12 @@ CREATE TABLE assignments (
 CREATE INDEX idx_assignments_assignee_status ON assignments(assigned_to, status);
 ```
 
-**ขั้นอนุมัติ (approval chain — #14):** หลังผู้ตรวจสอบ (`project_auditor`) ตรวจงานที่ `under_review`
-แล้ว จะ**ส่งขออนุมัติ**แทนที่จะปิดงานเองเหมือนเดิม (`under_review → pending_approval`) จากนั้น
-เฉพาะ `regional_supervisor` เท่านั้นที่ทำ `pending_approval → completed` (อนุมัติ) หรือ
-`pending_approval → revision_requested` (ตีกลับ — **บังคับกรอกเหตุผลในช่อง `note`**) ได้
-State machine + role gate อยู่ที่ `src/routers/audit.py` (`SUPERVISOR_TRANSITIONS`); หลักฐาน
-ผู้อนุมัติ+เวลาบันทึกอัตโนมัติใน `assignment_status_history` เหมือน transition อื่นทุกจุด
-ไม่ต้องเพิ่มตารางแยก
+**ขั้นตอนงานตรวจสอบ:** โครงการที่ยังไม่มี assignment แสดงเป็น `รอมอบหมาย`; เมื่อผู้ตรวจสอบ
+มอบหมายงานแล้ว assignment จะเริ่มที่ `in_progress` ทันที. การส่ง feedback ของผู้รับงาน
+(`risk_analyst`) จะเปลี่ยนเป็น `under_review` และผู้ตรวจสอบโครงการ (`project_auditor`)
+อนุมัติ feedback แล้วเปลี่ยนเป็น `completed`.
+State machine + role gate อยู่ที่ `src/routers/audit.py` และทุก transition บันทึกลง
+`assignment_status_history` โดยไม่ต้องเพิ่มตารางแยก
 
 ### 6.2 `assignment_status_history` — ประวัติการเปลี่ยนสถานะงาน
 
@@ -538,10 +536,10 @@ CREATE TABLE error_debug_log (
 CREATE TABLE notifications (
     notification_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     user_id    INTEGER NOT NULL REFERENCES users(user_id),
-    type       TEXT NOT NULL,          -- 'assignment' | 'high_risk'
+    type       TEXT NOT NULL,          -- 'assignment'
     message    TEXT NOT NULL,
-    ref_type   TEXT,                   -- 'assignment' | 'project'
-    ref_id     TEXT,                   -- assignment_id หรือ project_id (TEXT รองรับทั้งคู่)
+    ref_type   TEXT,                   -- 'assignment'
+    ref_id     TEXT,                   -- assignment_id (TEXT)
     read_at    TEXT,
     created_at TEXT NOT NULL DEFAULT (now_text())
 );
@@ -549,12 +547,9 @@ CREATE INDEX idx_notifications_user_unread ON notifications(user_id, read_at);
 ```
 
 **Trigger points** (เขียนโดย `src/notify.py::create_notification()` — insert อย่างเดียว, commit ร่วม transaction เดียวกับจุดเรียก):
-- `POST /audit/assignments` สำเร็จ → แจ้ง `assigned_to` (risk_analyst ที่ได้รับมอบหมาย)
-- `POST /admin/risk-engine/run` → เทียบ `run_id` ปัจจุบันกับ `run_id` ก่อนหน้าใน `project_risk_scores`,
-  โครงการที่ `risk_level='high'` รอบนี้แต่ไม่ high ใน run ก่อน = "ใหม่" → แจ้ง `project_auditor`
-  ของตำบลนั้น. **ถ้าไม่มี run ก่อนหน้า (run แรกของระบบ) จะไม่แจ้งเตือน** กัน flood ตอนเริ่มระบบ.
-  Query diff อยู่ที่ `src/routers/admin.py` เท่านั้น (ไม่แตะ `run_project_engine`/`seed_database.py`
-  ตามกติกาห้ามแก้ risk logic นอกไฟล์เดียว)
+- `POST /audit/assignments` สำเร็จ → แจ้ง `assigned_to` ว่าสถานะ `กำลังดำเนินการ`
+- นักวิเคราะห์ส่ง feedback → แจ้ง `assigned_by` ว่าสถานะ `อยู่ระหว่างสอบทาน`
+- ผู้ตรวจสอบโครงการอนุมัติ feedback → แจ้ง `assigned_to` ว่าสถานะ `เสร็จสิ้น`
 
 **อ่าน:** `GET /notifications` (ของตัวเองเท่านั้น, `?unread=true` filter), `PATCH /notifications/{id}/read`,
 `POST /notifications/read-all` — ทั้งหมดใน `src/routers/notifications.py`

@@ -226,9 +226,8 @@ CREATE TABLE assignments (
     due_date      TEXT,
     budget_hours  REAL,
     audit_steps   TEXT NOT NULL DEFAULT '',
-    status        TEXT NOT NULL DEFAULT 'waiting_acceptance' CHECK (status IN (
-        'waiting_acceptance','accepted','in_progress','clarification_needed',
-        'ready_for_review','under_review','pending_approval','revision_requested','completed'
+    status        TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN (
+        'in_progress','under_review','completed'
     )),
     created_at    TEXT NOT NULL DEFAULT (now_text()),
     updated_at    TEXT NOT NULL DEFAULT (now_text())
@@ -265,7 +264,7 @@ CREATE TABLE assignment_attachments (
 CREATE INDEX idx_assignment_attachments_assignment ON assignment_attachments(assignment_id);
 
 -- กระทู้ขอความชัดเจน (clarification thread) ระหว่าง risk_analyst กับ project_auditor ต่องาน
--- ตรวจสอบหนึ่งงาน — เป็นข้อความคู่ขนานกับสถานะ 'clarification_needed' ของ assignments ไม่ได้
+-- ตรวจสอบหนึ่งงาน — เป็นข้อความคู่ขนานกับสถานะงาน ไม่ได้
 -- บังคับผูกกับการเปลี่ยนสถานะ (โพสต์ได้ทุกสถานะ)
 CREATE TABLE assignment_clarifications (
     clarification_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -1524,17 +1523,13 @@ def seed_auditor_feedback(cur):
 
 def seed_assignments(cur):
     """seed งานมอบหมาย (demo) — คนละ 1 โครงการ (risk สูงสุด) ต่อตำบล เดินสถานะต่างกันเพื่อให้
-    ทดสอบ workflow ครบช่วง (มอบหมายใหม่ / กำลังทำ / รออนุมัติจาก regional_supervisor) และมี
+    ทดสอบ workflow ครบช่วง (มอบหมายใหม่ / กำลังทำ / อยู่ระหว่างสอบทาน) และมี
     seed แถวใน assignment_status_history + notifications ไปด้วย (mirror hook ที่ POST /audit/assignments
     ทำจริงตอน runtime — ตรงนี้ seed ตรงเพราะไม่ได้ผ่าน endpoint)"""
-    pairs = {}  # subdistrict_id -> {"auditor": uid, "analyst": uid, "supervisor": uid}
+    pairs = {}  # subdistrict_id -> {"auditor": uid, "analyst": uid}
     for uid, role, sid in cur.execute(
             "SELECT user_id, role, subdistrict_id FROM users WHERE role IN ('project_auditor','risk_analyst')"):
         pairs.setdefault(sid, {})[role] = uid
-    supervisor_id = cur.execute(
-        "SELECT user_id FROM users WHERE role='regional_supervisor' LIMIT 1"
-    ).fetchone()["user_id"]
-
     top_project = {}  # subdistrict_id -> project_id (risk สูงสุด, run ล่าสุด)
     for pid, sid in cur.execute("""
             SELECT prs.project_id, p.subdistrict_id
@@ -1545,7 +1540,7 @@ def seed_assignments(cur):
         top_project.setdefault(sid, pid)
 
     # (subdistrict ลำดับ, สถานะปลายทาง, note ตอนสร้าง)
-    demo_flow = ["waiting_acceptance", "in_progress", "pending_approval"]
+    demo_flow = ["in_progress", "under_review", "completed"]
 
     n = 0
     now = datetime.now()
@@ -1567,35 +1562,29 @@ def seed_assignments(cur):
         cur.execute("""INSERT INTO assignment_status_history
             (assignment_id, old_status, new_status, changed_by, note, created_at)
             VALUES (?,?,?,?,?,?)""",
-            (assignment_id, None, "waiting_acceptance", auditor_id, "สร้างและมอบหมายงาน", created_at))
+            (assignment_id, None, "in_progress", auditor_id, "สร้างและมอบหมายงานเพื่อดำเนินการ", created_at))
         cur.execute("""INSERT INTO notifications
             (user_id, type, message, ref_type, ref_id, created_at)
             VALUES (?,?,?,?,?,?)""",
-            (analyst_id, "assignment", "คุณได้รับมอบหมายงานตรวจสอบโครงการใหม่",
+            (analyst_id, "assignment", "คุณได้รับมอบหมายงานตรวจสอบโครงการใหม่ (สถานะ: กำลังดำเนินการ)",
              "assignment", str(assignment_id), created_at))
 
         # เดินสถานะต่อจนถึงปลายทาง เพื่อให้ status_history มีหลายแถว (เหมือน flow จริง)
         path = {
-            "in_progress": ["accepted", "in_progress"],
-            "pending_approval": ["accepted", "in_progress", "ready_for_review", "under_review", "pending_approval"],
+            "under_review": ["under_review"],
+            "completed": ["under_review", "completed"],
         }.get(target_status, [])
-        prev = "waiting_acceptance"
+        prev = "in_progress"
         for step_i, step in enumerate(path):
             step_ts = (now - timedelta(days=5 - step_i - 1)).strftime("%Y-%m-%d %H:%M:%S")
-            changed_by = auditor_id if step in ("under_review", "pending_approval") else analyst_id
+            changed_by = auditor_id if step == "completed" else analyst_id
             cur.execute("""INSERT INTO assignment_status_history
                 (assignment_id, old_status, new_status, changed_by, note, created_at)
                 VALUES (?,?,?,?,?,?)""",
                 (assignment_id, prev, step, changed_by, None, step_ts))
             prev = step
-        if target_status == "pending_approval":
-            cur.execute("""INSERT INTO notifications
-                (user_id, type, message, ref_type, ref_id, created_at)
-                VALUES (?,?,?,?,?,?)""",
-                (supervisor_id, "assignment", "มีงานตรวจสอบรออนุมัติปิดงาน",
-                 "assignment", str(assignment_id), now.strftime("%Y-%m-%d %H:%M:%S")))
         n += 1
-    log(f"assignments (demo): {n} รายการ กระจาย {len(pairs)} ตำบล ครบสถานะ waiting_acceptance/in_progress/pending_approval")
+    log(f"assignments (demo): {n} รายการ กระจาย {len(pairs)} ตำบล ครบสถานะ in_progress/under_review/completed")
 
 
 # ---------------------------------------------------------------------------
