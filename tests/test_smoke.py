@@ -127,7 +127,7 @@ def test_audit_assignments_role_gate():
     r = client.get("/audit/assignments", headers={"X-Username": "analyst1"})
     assert r.status_code == 200
     assert len(r.json()) == 1
-    assert r.json()[0]["status"] in ("waiting_acceptance", "in_progress", "pending_approval")
+    assert r.json()[0]["status"] in ("waiting_acceptance", "in_progress", "under_review", "completed")
     # local_executive / public_user ไม่มีสิทธิ์งาน assignment ตาม roles.md
     for username in ("thachang_user", "public1"):
         r = client.get("/audit/assignments", headers={"X-Username": username})
@@ -291,13 +291,13 @@ def test_auditor_can_create_assignment_with_history():
         assert mine.status_code == 200
         assert any(item["assignment_id"] == assignment_id for item in mine.json())
 
-        accepted = client.patch(
+        started = client.patch(
             f"/audit/assignments/{assignment_id}/status",
             headers=analyst_headers,
-            json={"status": "accepted"},
+            json={"status": "in_progress"},
         )
-        assert accepted.status_code == 200
-        assert accepted.json()["status"] == "accepted"
+        assert started.status_code == 200
+        assert started.json()["status"] == "in_progress"
 
         denied_delete = client.delete(f"/audit/assignments/{assignment_id}", headers=analyst_headers)
         assert denied_delete.status_code == 403
@@ -717,14 +717,12 @@ def test_admin_data_upload():
             con.commit()
 
 
-def test_approval_chain_full_flow():
-    """#14: under_review -> pending_approval (auditor) -> completed/revision_requested (regional_supervisor)
-    auditor เปลี่ยนตรง under_review -> completed เองไม่ได้แล้ว (ต้องผ่านผู้บังคับบัญชา)"""
+def test_assignment_workflow_full_flow():
+    """งานเดิน 4 สถานะโดยไม่มีขั้นอนุมัติแยก."""
     from src.database import db_session
 
     auditor_headers = {"X-Username": "auditor1"}
     analyst_headers = {"X-Username": "analyst1"}
-    supervisor_headers = {"X-Username": "supervisor1"}
 
     projects = client.get("/projects", headers=auditor_headers).json()
     already_assigned = {
@@ -755,59 +753,30 @@ def test_approval_chain_full_flow():
         return client.patch(f"/audit/assignments/{assignment_id}/status", headers=headers, json=payload)
 
     try:
-        # เดินสถานะจนถึง under_review
+        # ผู้รับงานเริ่มงานและส่งให้สอบทาน
         for headers, status in [
-            (analyst_headers, "accepted"),
             (analyst_headers, "in_progress"),
-            (analyst_headers, "ready_for_review"),
-            (auditor_headers, "under_review"),
+            (analyst_headers, "under_review"),
         ]:
             r = set_status(headers, status)
             assert r.status_code == 200, r.text
             assert r.json()["status"] == status
 
-        # auditor ปิดงานเองตรงๆ ไม่ได้อีกต่อไป
-        r = set_status(auditor_headers, "completed")
-        assert r.status_code == 409
-
-        # auditor ส่งขออนุมัติได้
-        r = set_status(auditor_headers, "pending_approval")
-        assert r.status_code == 200
-        assert r.json()["status"] == "pending_approval"
-
-        # risk_analyst เปลี่ยนสถานะขั้นอนุมัติไม่ได้
+        # ผู้รับงานปิดงานเองไม่ได้
         r = set_status(analyst_headers, "completed")
         assert r.status_code == 409
 
-        # regional_supervisor ตีกลับโดยไม่ใส่เหตุผล -> 400
-        r = set_status(supervisor_headers, "revision_requested")
-        assert r.status_code == 400
-
-        # regional_supervisor ตีกลับพร้อมเหตุผล -> ผ่าน
-        r = set_status(supervisor_headers, "revision_requested", note="เอกสารไม่ครบ กรุณาแนบสัญญาเพิ่ม")
-        assert r.status_code == 200
-        assert r.json()["status"] == "revision_requested"
-
-        # เดินสถานะกลับไป pending_approval อีกครั้งแล้วอนุมัติ
-        for headers, status in [
-            (analyst_headers, "in_progress"),
-            (analyst_headers, "ready_for_review"),
-            (auditor_headers, "under_review"),
-            (auditor_headers, "pending_approval"),
-        ]:
-            r = set_status(headers, status)
-            assert r.status_code == 200, r.text
-
-        r = set_status(supervisor_headers, "completed")
+        # ผู้ตรวจสอบโครงการปิดงานได้โดยตรง
+        r = set_status(auditor_headers, "completed")
         assert r.status_code == 200
         assert r.json()["status"] == "completed"
 
         history = client.get(f"/audit/assignments/{assignment_id}", headers=auditor_headers).json()
-        approver_entries = [
+        completion_entries = [
             h for h in history["status_history"]
-            if h["new_status"] == "completed" and h["changed_by_username"] == "supervisor1"
+            if h["new_status"] == "completed" and h["changed_by_username"] == "auditor1"
         ]
-        assert approver_entries, "ต้องมีหลักฐานผู้อนุมัติ+เวลาใน assignment_status_history"
+        assert completion_entries, "ต้องมีหลักฐานผู้ปิดงาน+เวลาใน assignment_status_history"
     finally:
         with db_session() as con:
             con.execute("DELETE FROM notifications WHERE ref_type = 'assignment' AND ref_id = ?", (str(assignment_id),))

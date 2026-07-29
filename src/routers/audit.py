@@ -188,30 +188,17 @@ def export_audit_report(
 
 ASSIGNMENT_STATUSES = {
     "waiting_acceptance",
-    "accepted",
     "in_progress",
-    "clarification_needed",
-    "ready_for_review",
     "under_review",
-    "pending_approval",
-    "revision_requested",
     "completed",
 }
 ANALYST_TRANSITIONS = {
-    "waiting_acceptance": {"accepted"},
-    "accepted": {"in_progress"},
-    "in_progress": {"clarification_needed", "ready_for_review"},
-    "clarification_needed": {"in_progress"},
-    "revision_requested": {"in_progress"},
+    "waiting_acceptance": {"in_progress"},
+    "in_progress": {"under_review"},
 }
-# auditor ตรวจงานแล้วส่งขออนุมัติ (ไม่ปิดงานเองอีกต่อไป — ต้องผ่าน SUPERVISOR_TRANSITIONS)
+# ผู้ตรวจสอบโครงการปิดงานหลังสอบทานเสร็จ โดยไม่มีขั้นอนุมัติแยก
 REVIEWER_TRANSITIONS = {
-    "ready_for_review": {"under_review"},
-    "under_review": {"revision_requested", "pending_approval"},
-}
-# regional_supervisor อนุมัติปิดงาน หรือตีกลับให้แก้ (ขั้นอนุมัติสุดท้าย — ดู #14)
-SUPERVISOR_TRANSITIONS = {
-    "pending_approval": {"completed", "revision_requested"},
+    "under_review": {"completed"},
 }
 ASSIGNMENT_SELECT = """
     SELECT a.*, p.project_name, p.subdistrict_id,
@@ -515,7 +502,7 @@ def update_assignment(
 def update_assignment_status(
     assignment_id: int,
     payload: AssignmentStatusUpdate,
-    user: dict = Depends(require_roles("admin", "project_auditor", "risk_analyst", "regional_supervisor")),
+    user: dict = Depends(require_roles("admin", "project_auditor", "risk_analyst")),
     conn: Connection = Depends(get_db),
 ):
     assignment = _assignment_in_scope(conn, assignment_id, user)
@@ -527,14 +514,10 @@ def update_assignment_status(
         allowed = ANALYST_TRANSITIONS.get(current_status, set())
     elif user["role"] == "project_auditor":
         allowed = REVIEWER_TRANSITIONS.get(current_status, set())
-    elif user["role"] == "regional_supervisor":
-        allowed = SUPERVISOR_TRANSITIONS.get(current_status, set())
     else:
         allowed = ASSIGNMENT_STATUSES - {current_status}
     if next_status not in allowed:
         raise HTTPException(status_code=409, detail=f"ไม่สามารถเปลี่ยนสถานะจาก {current_status} เป็น {next_status} ได้")
-    if next_status == "revision_requested" and not (payload.note or "").strip():
-        raise HTTPException(status_code=400, detail="ต้องระบุเหตุผลเมื่อตีกลับงาน")
     conn.execute(
         "UPDATE assignments SET status = ?, updated_at = now_text() WHERE assignment_id = ?",
         (next_status, assignment_id),

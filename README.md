@@ -249,9 +249,8 @@ data_modelling/
 **Risk results** (เขียนโดย engine ทุก run) — `assessment_runs`, `project_risk_results`,
 `project_risk_scores`, `annual_risk_results`
 
-**Audit workflow + notifications** — `assignments` (approval chain: `waiting_acceptance` →
-`accepted`/`in_progress` → `ready_for_review` → `under_review` → `pending_approval` → `completed`,
-อนุมัติขั้นสุดท้ายโดย `regional_supervisor`), `assignment_status_history`, `auditor_feedback`
+**Audit workflow + notifications** — `assignments` (`waiting_acceptance` → `in_progress` →
+`under_review` → `completed`; ไม่มีขั้นอนุมัติแยก), `assignment_status_history`, `auditor_feedback`
 (CRUD + resolve workflow ใช้งานจริงแล้ว), `notifications` (bell icon ฝั่ง frontend),
 `access_log` (accountability trail, admin ดูได้ที่ `GET /audit/access-log`)
 และ log retention tables (`access_log_archive`, `access_log_holds`, `log_retention_runs`,
@@ -359,10 +358,10 @@ curl -X POST http://127.0.0.1:8000/admin/data/upload \
 # แจ้งเตือน — unread count + list
 curl http://127.0.0.1:8000/notifications?unread=true -H "Authorization: Bearer $TOKEN"
 
-# มอบหมายงาน/อนุมัติ (approval chain) — เปลี่ยนสถานะ assignment
+# มอบหมายงาน — เริ่มดำเนินการตรวจสอบ
 curl -X PATCH http://127.0.0.1:8000/audit/assignments/1/status \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"status":"accepted"}'
+  -d '{"status":"in_progress"}'
 
 # open data export — ไม่ต้อง scope guard ตำบล แต่ role-gate เฉพาะ admin/regional_supervisor/public_user
 curl "http://127.0.0.1:8000/public/projects/export?format=csv" -H "Authorization: Bearer $TOKEN"

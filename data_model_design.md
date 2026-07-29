@@ -358,8 +358,7 @@ CREATE TABLE assignments (
     budget_hours  REAL,
     audit_steps   TEXT NOT NULL DEFAULT '',
     status        TEXT NOT NULL DEFAULT 'waiting_acceptance' CHECK (status IN (
-        'waiting_acceptance','accepted','in_progress','clarification_needed',
-        'ready_for_review','under_review','pending_approval','revision_requested','completed'
+        'waiting_acceptance','in_progress','under_review','completed'
     )),
     created_at    TEXT NOT NULL DEFAULT (now_text()),
     updated_at    TEXT NOT NULL DEFAULT (now_text())
@@ -367,13 +366,11 @@ CREATE TABLE assignments (
 CREATE INDEX idx_assignments_assignee_status ON assignments(assigned_to, status);
 ```
 
-**ขั้นอนุมัติ (approval chain — #14):** หลังผู้ตรวจสอบ (`project_auditor`) ตรวจงานที่ `under_review`
-แล้ว จะ**ส่งขออนุมัติ**แทนที่จะปิดงานเองเหมือนเดิม (`under_review → pending_approval`) จากนั้น
-เฉพาะ `regional_supervisor` เท่านั้นที่ทำ `pending_approval → completed` (อนุมัติ) หรือ
-`pending_approval → revision_requested` (ตีกลับ — **บังคับกรอกเหตุผลในช่อง `note`**) ได้
-State machine + role gate อยู่ที่ `src/routers/audit.py` (`SUPERVISOR_TRANSITIONS`); หลักฐาน
-ผู้อนุมัติ+เวลาบันทึกอัตโนมัติใน `assignment_status_history` เหมือน transition อื่นทุกจุด
-ไม่ต้องเพิ่มตารางแยก
+**ขั้นตอนงานตรวจสอบ:** ใช้ 4 สถานะเท่านั้น: `waiting_acceptance → in_progress → under_review → completed`.
+ผู้รับงาน (`risk_analyst`) เริ่มดำเนินการและส่งงานเข้าสู่การสอบทาน; ผู้ตรวจสอบโครงการ
+(`project_auditor`) ปิดงานที่ `under_review` ได้โดยตรง ไม่มีขั้นอนุมัติแยก.
+State machine + role gate อยู่ที่ `src/routers/audit.py` และทุก transition บันทึกลง
+`assignment_status_history` โดยไม่ต้องเพิ่มตารางแยก
 
 ### 6.2 `assignment_status_history` — ประวัติการเปลี่ยนสถานะงาน
 

@@ -123,28 +123,21 @@ Scope invariant (role นิยามใน `roles.md` — seed ลงตาร�
 
 This scope check is a backend responsibility. Frontend filters are UX only.
 
-## Approval Chain (Audit Assignment State Machine)
+## Audit Assignment State Machine
 
 `PATCH /audit/assignments/{id}/status` (ใน `src/routers/audit.py`) คุม state machine นี้:
 
 ```mermaid
 stateDiagram-v2
   [*] --> waiting_acceptance
-  waiting_acceptance --> accepted: analyst รับงาน
-  accepted --> in_progress
-  in_progress --> clarification_needed
-  clarification_needed --> in_progress
-  in_progress --> ready_for_review: analyst ส่งงาน
-  ready_for_review --> under_review: auditor เริ่มตรวจ
-  under_review --> revision_requested: auditor ตีกลับ
-  under_review --> pending_approval: auditor ส่งต่อ
-  revision_requested --> in_progress
-  pending_approval --> completed: regional_supervisor อนุมัติ
-  pending_approval --> revision_requested: regional_supervisor ตีกลับ
+  waiting_acceptance --> in_progress: analyst เริ่มดำเนินการ
+  in_progress --> under_review: analyst ส่งให้สอบทาน
+  under_review --> completed: auditor ปิดงาน
   completed --> [*]
 ```
 
-`admin` ทำ transition ใดก็ได้ทุกขั้น ทุกการเปลี่ยนสถานะเขียนแถวลง `assignment_status_history`
+`admin` ทำ transition ได้ทุกขั้น; ผู้รับงาน (`risk_analyst`) เดินสองขั้นแรก และผู้ตรวจสอบโครงการ
+(`project_auditor`) ปิดงานหลังสอบทาน ทุกการเปลี่ยนสถานะเขียนแถวลง `assignment_status_history`
 และสร้าง notification ให้ฝ่ายที่เกี่ยวข้อง (`src/notify.py`)
 
 ## Database Module
