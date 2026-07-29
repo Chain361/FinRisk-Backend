@@ -27,6 +27,7 @@ def test_public_project_payload_masks_vendor_and_contract_fields():
         "vendor_tin": "1234567890123",
         "contract_no": "CN-123",
         "contract_status": "ลงนามแล้ว",
+        "project_status": "อยู่ระหว่างดำเนินการ",
         "data_quality_note": "source tin 1234567890123",
     }
 
@@ -35,6 +36,7 @@ def test_public_project_payload_masks_vendor_and_contract_fields():
     assert masked["vendor_id"] is None
     assert masked["contract_no"] is None
     assert masked["contract_status"] is None
+    assert masked["project_status"] is None
     assert masked["vendor_tin"] == "*********0123"
     assert masked["vendor_name"] == "นาย ต*******"
     assert "1234567890123" not in masked["data_quality_note"]
@@ -76,3 +78,22 @@ def test_public_project_detail_does_not_expose_raw_vendor_pii():
     assert admin_project["vendor_id"] == raw["vendor_id"]
     assert admin_project["contract_no"] == raw["contract_no"]
     assert admin_project["vendor_tin"] == raw["tin"]
+
+
+def test_public_project_detail_does_not_expose_project_status():
+    with db_session() as con:
+        row = con.execute(
+            "SELECT project_id FROM projects WHERE project_status IS NOT NULL LIMIT 1"
+        ).fetchone()
+
+    if row is None:
+        pytest.skip("seed database has no project with project_status set")
+
+    project_id = dict(row)["project_id"]
+    public_response = client.get(f"/projects/{project_id}", headers={"X-Username": "public1"})
+    assert public_response.status_code == 200, public_response.text
+    assert public_response.json()["project"]["project_status"] is None
+
+    admin_response = client.get(f"/projects/{project_id}", headers={"X-Username": "admin"})
+    assert admin_response.status_code == 200, admin_response.text
+    assert admin_response.json()["project"]["project_status"] is not None

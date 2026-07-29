@@ -12,6 +12,7 @@ PUBLIC_PROJECT_REDACTED_FIELDS = {
     "contract_finish_date",
     "contract_duration_days",
     "contract_status",
+    "project_status",
     "vendor_id",
 }
 _LONG_DIGIT_RE = re.compile(r"\d{4,}")
