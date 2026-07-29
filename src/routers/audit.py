@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Audit assignments, workflow history, feedback, and access-log endpoints."""
 import os
+import re
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import quote
 
@@ -132,6 +133,34 @@ ASSIGNMENT_SELECT = """
 """
 
 
+def _assignment_work_fields(audit_steps: str | None) -> tuple[str, str]:
+    """Extract the two assignment fields from the legacy single DB column."""
+    value = (audit_steps or "").strip()
+    match = re.match(
+        r"^กระบวนการงาน:\s*(.*?)\nวัตถุประสงค์ของกระบวนงาน:\s*(.*)$",
+        value,
+        flags=re.DOTALL,
+    )
+    return (match.group(1).strip(), match.group(2).strip()) if match else ("", "")
+
+
+def _format_assignment_work(work_process: str, work_objective: str, audit_steps: str | None = None) -> str:
+    """Persist the structured fields in `audit_steps` without a DB migration."""
+    process = work_process.strip()
+    objective = work_objective.strip()
+    if process or objective:
+        return f"กระบวนการงาน: {process}\nวัตถุประสงค์ของกระบวนงาน: {objective}"
+    return (audit_steps or "").strip()
+
+
+def _serialize_assignment(row: SqliteLikeRow) -> dict:
+    data = dict(row)
+    work_process, work_objective = _assignment_work_fields(data.get("audit_steps"))
+    data["work_process"] = work_process
+    data["work_objective"] = work_objective
+    return data
+
+
 def _project_in_scope(conn: Connection, project_id: str, user: dict) -> SqliteLikeRow:
     project = conn.execute(
         "SELECT project_id, subdistrict_id FROM projects WHERE project_id = ?",
@@ -225,7 +254,7 @@ def _assignment_detail(conn: Connection, assignment_id: int) -> dict:
     ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="ไม่พบงานที่มอบหมาย")
-    return dict(row)
+    return _serialize_assignment(row)
 
 
 def _visible_assignments(conn: Connection, user: dict) -> list[dict]:
@@ -234,7 +263,7 @@ def _visible_assignments(conn: Connection, user: dict) -> list[dict]:
             ASSIGNMENT_SELECT + " WHERE a.assigned_to = ? ORDER BY a.created_at DESC",
             (user["user_id"],),
         ).fetchall()
-        return rows_to_dicts(rows)
+        return [_serialize_assignment(row) for row in rows]
     scope = scope_subdistrict_ids(conn, user)
     sql = ASSIGNMENT_SELECT
     params: list = []
@@ -242,7 +271,7 @@ def _visible_assignments(conn: Connection, user: dict) -> list[dict]:
         sql += " WHERE p.subdistrict_id IN ({})".format(",".join("?" * len(scope)) or "NULL")
         params = scope
     rows = conn.execute(sql + " ORDER BY a.created_at DESC", params).fetchall()
-    return rows_to_dicts(rows)
+    return [_serialize_assignment(row) for row in rows]
 
 
 @router.get("/assignments/assignees")
@@ -306,11 +335,12 @@ def create_assignment(
         raise HTTPException(status_code=409, detail="โครงการนี้มีงานที่ยังไม่เสร็จสิ้นอยู่แล้ว")
     cursor = conn.execute(
         """INSERT INTO assignments
-           (project_id, assigned_to, assigned_by, priority, note, due_date, status)
-           VALUES (?,?,?,?,?,?, 'waiting_acceptance')
+           (project_id, assigned_to, assigned_by, priority, note, due_date, audit_steps, status)
+           VALUES (?,?,?,?,?,?,?, 'waiting_acceptance')
            RETURNING assignment_id""",
         (payload.project_id, payload.assignee_id, user["user_id"], payload.priority,
-         payload.note, payload.due_date),
+         payload.note, payload.due_date,
+         _format_assignment_work(payload.work_process, payload.work_objective, payload.audit_steps)),
     )
     assignment_id = cursor.fetchone()["assignment_id"]
     conn.execute(
@@ -362,6 +392,16 @@ def update_assignment(
     values = payload.model_dump(exclude_unset=True)
     if not values:
         return _assignment_detail(conn, assignment_id)
+    work_process = values.pop("work_process", None)
+    work_objective = values.pop("work_objective", None)
+    audit_steps = values.pop("audit_steps", None)
+    if work_process is not None or work_objective is not None or audit_steps is not None:
+        current_process, current_objective = _assignment_work_fields(assignment["audit_steps"])
+        values["audit_steps"] = _format_assignment_work(
+            current_process if work_process is None else work_process,
+            current_objective if work_objective is None else work_objective,
+            audit_steps if audit_steps is not None else assignment["audit_steps"],
+        )
     if "assignee_id" in values:
         project = _project_in_scope(conn, assignment["project_id"], user)
         _assignee_for_project(conn, values["assignee_id"], project)

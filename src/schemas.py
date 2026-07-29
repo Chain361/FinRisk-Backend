@@ -136,6 +136,10 @@ class AssignmentCreate(BaseModel):
     priority: AssignmentPriority = "normal"
     note: str = Field(min_length=1, max_length=5000)
     due_date: str | None = None
+    work_process: str = Field(default="", max_length=5000)
+    work_objective: str = Field(default="", max_length=5000)
+    # รองรับ client รุ่นก่อนที่ส่งฟิลด์รวมมาในช่วงเปลี่ยนผ่าน
+    audit_steps: str | None = Field(default=None, max_length=10000)
 
 
 class AssignmentUpdate(BaseModel):
@@ -143,6 +147,9 @@ class AssignmentUpdate(BaseModel):
     priority: AssignmentPriority | None = None
     note: str | None = Field(default=None, min_length=1, max_length=5000)
     due_date: str | None = None
+    work_process: str | None = Field(default=None, max_length=5000)
+    work_objective: str | None = Field(default=None, max_length=5000)
+    audit_steps: str | None = Field(default=None, max_length=10000)
 
 
 class AssignmentStatusUpdate(BaseModel):
