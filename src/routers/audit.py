@@ -187,19 +187,30 @@ def export_audit_report(
 
 
 ASSIGNMENT_STATUSES = {
-    "waiting_acceptance",
     "in_progress",
     "under_review",
     "completed",
 }
-ANALYST_TRANSITIONS = {
-    "waiting_acceptance": {"in_progress"},
-    "in_progress": {"under_review"},
-}
-# ผู้ตรวจสอบโครงการปิดงานหลังสอบทานเสร็จ โดยไม่มีขั้นอนุมัติแยก
-REVIEWER_TRANSITIONS = {
-    "under_review": {"completed"},
-}
+
+
+def _record_assignment_transition(
+    conn: Connection,
+    assignment_id: int,
+    old_status: str,
+    new_status: str,
+    changed_by: int,
+    note: str | None = None,
+) -> None:
+    conn.execute(
+        "UPDATE assignments SET status = ?, updated_at = now_text() WHERE assignment_id = ?",
+        (new_status, assignment_id),
+    )
+    conn.execute(
+        """INSERT INTO assignment_status_history
+           (assignment_id, old_status, new_status, changed_by, note)
+           VALUES (?,?,?,?,?)""",
+        (assignment_id, old_status, new_status, changed_by, note),
+    )
 ASSIGNMENT_SELECT = """
     SELECT a.*, p.project_name, p.subdistrict_id,
            'user' AS assignee_entity_type,
@@ -418,7 +429,7 @@ def create_assignment(
     cursor = conn.execute(
         """INSERT INTO assignments
            (project_id, assigned_to, assigned_by, priority, note, due_date, audit_steps, status)
-           VALUES (?,?,?,?,?,?,?, 'waiting_acceptance')
+           VALUES (?,?,?,?,?,?,?, 'in_progress')
            RETURNING assignment_id""",
         (payload.project_id, payload.assignee_id, user["user_id"], payload.priority,
          payload.note, payload.due_date,
@@ -428,8 +439,8 @@ def create_assignment(
     conn.execute(
         """INSERT INTO assignment_status_history
            (assignment_id, old_status, new_status, changed_by, note)
-           VALUES (?, NULL, 'waiting_acceptance', ?, ?)""",
-        (assignment_id, user["user_id"], "สร้างและมอบหมายงาน"),
+           VALUES (?, NULL, 'in_progress', ?, ?)""",
+        (assignment_id, user["user_id"], "สร้างและมอบหมายงานเพื่อดำเนินการ"),
     )
     create_notification(
         conn,
@@ -469,8 +480,8 @@ def update_assignment(
     conn: Connection = Depends(get_db),
 ):
     assignment = _assignment_in_scope(conn, assignment_id, user)
-    if assignment["status"] != "waiting_acceptance":
-        raise HTTPException(status_code=409, detail="แก้ไขรายละเอียดหรือย้ายผู้รับผิดชอบได้ก่อนผู้รับงานตอบรับเท่านั้น")
+    if assignment["status"] != "in_progress":
+        raise HTTPException(status_code=409, detail="แก้ไขรายละเอียดหรือย้ายผู้รับผิดชอบได้ขณะกำลังดำเนินการเท่านั้น")
     values = payload.model_dump(exclude_unset=True)
     if not values:
         return _assignment_detail(conn, assignment_id)
@@ -502,7 +513,7 @@ def update_assignment(
 def update_assignment_status(
     assignment_id: int,
     payload: AssignmentStatusUpdate,
-    user: dict = Depends(require_roles("admin", "project_auditor", "risk_analyst")),
+    user: dict = Depends(require_roles("admin")),
     conn: Connection = Depends(get_db),
 ):
     assignment = _assignment_in_scope(conn, assignment_id, user)
@@ -510,23 +521,11 @@ def update_assignment_status(
     next_status = payload.status
     if current_status == next_status:
         return _assignment_detail(conn, assignment_id)
-    if user["role"] == "risk_analyst":
-        allowed = ANALYST_TRANSITIONS.get(current_status, set())
-    elif user["role"] == "project_auditor":
-        allowed = REVIEWER_TRANSITIONS.get(current_status, set())
-    else:
-        allowed = ASSIGNMENT_STATUSES - {current_status}
+    allowed = ASSIGNMENT_STATUSES - {current_status}
     if next_status not in allowed:
         raise HTTPException(status_code=409, detail=f"ไม่สามารถเปลี่ยนสถานะจาก {current_status} เป็น {next_status} ได้")
-    conn.execute(
-        "UPDATE assignments SET status = ?, updated_at = now_text() WHERE assignment_id = ?",
-        (next_status, assignment_id),
-    )
-    conn.execute(
-        """INSERT INTO assignment_status_history
-           (assignment_id, old_status, new_status, changed_by, note)
-           VALUES (?,?,?,?,?)""",
-        (assignment_id, current_status, next_status, user["user_id"], payload.note),
+    _record_assignment_transition(
+        conn, assignment_id, current_status, next_status, user["user_id"], payload.note
     )
     conn.commit()
     return _assignment_detail(conn, assignment_id)
@@ -750,6 +749,22 @@ def create_feedback(
         ),
     )
     feedback_id = cur.fetchone()["feedback_id"]
+    if body.status == "submitted" and user["role"] == "risk_analyst":
+        assignment = conn.execute(
+            """SELECT assignment_id, status FROM assignments
+               WHERE project_id = ? AND assigned_to = ? AND status != 'completed'
+               ORDER BY assignment_id DESC LIMIT 1""",
+            (body.project_id, user["user_id"]),
+        ).fetchone()
+        if assignment is not None and assignment["status"] == "in_progress":
+            _record_assignment_transition(
+                conn,
+                assignment["assignment_id"],
+                "in_progress",
+                "under_review",
+                user["user_id"],
+                "ส่ง feedback เพื่อให้ผู้ตรวจสอบสอบทาน",
+            )
     conn.commit()
     return _fetch_feedback(conn, feedback_id)
 
@@ -762,7 +777,7 @@ def update_feedback(
     conn: Connection = Depends(get_db),
 ):
     row = conn.execute(
-        "SELECT user_id, status, submitted_at FROM auditor_feedback WHERE feedback_id = ?",
+        "SELECT user_id, project_id, status, submitted_at FROM auditor_feedback WHERE feedback_id = ?",
         (feedback_id,),
     ).fetchone()
     if row is None:
@@ -791,6 +806,22 @@ def update_feedback(
             feedback_id,
         ),
     )
+    if body.status == "submitted" and user["role"] == "risk_analyst":
+        assignment = conn.execute(
+            """SELECT assignment_id, status FROM assignments
+               WHERE project_id = ? AND assigned_to = ? AND status != 'completed'
+               ORDER BY assignment_id DESC LIMIT 1""",
+            (row["project_id"], user["user_id"]),
+        ).fetchone()
+        if assignment is not None and assignment["status"] == "in_progress":
+            _record_assignment_transition(
+                conn,
+                assignment["assignment_id"],
+                "in_progress",
+                "under_review",
+                user["user_id"],
+                "ส่ง feedback เพื่อให้ผู้ตรวจสอบสอบทาน",
+            )
     conn.commit()
     return _fetch_feedback(conn, feedback_id)
 
@@ -817,20 +848,39 @@ def delete_feedback(
 @router.patch("/feedback/{feedback_id}/resolve", response_model=AuditorFeedbackOut)
 def resolve_feedback(
     feedback_id: int,
-    _: dict = Depends(require_roles(*RESOLVE_ROLES)),
+    user: dict = Depends(require_roles(*RESOLVE_ROLES)),
     conn: Connection = Depends(get_db),
 ):
     row = conn.execute(
-        "SELECT feedback_id FROM auditor_feedback WHERE feedback_id = ?", (feedback_id,)
+        "SELECT feedback_id, project_id, status FROM auditor_feedback WHERE feedback_id = ?", (feedback_id,)
     ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="ไม่พบความคิดเห็น")
+    if row["status"] == "resolved":
+        return _fetch_feedback(conn, feedback_id)
+    if row["status"] != "submitted":
+        raise HTTPException(status_code=409, detail="อนุมัติได้เฉพาะ feedback ที่ส่งแล้ว")
 
     now = _now_str()
     conn.execute(
         "UPDATE auditor_feedback SET status = 'resolved', resolved_at = ?, updated_at = ? WHERE feedback_id = ?",
         (now, now, feedback_id),
     )
+    assignment = conn.execute(
+        """SELECT assignment_id, status FROM assignments
+           WHERE project_id = ? AND status = 'under_review'
+           ORDER BY assignment_id DESC LIMIT 1""",
+        (row["project_id"],),
+    ).fetchone()
+    if assignment is not None:
+        _record_assignment_transition(
+            conn,
+            assignment["assignment_id"],
+            "under_review",
+            "completed",
+            user["user_id"],
+            "ปิดงานหลังผู้ตรวจสอบโครงการอนุมัติ feedback",
+        )
     conn.commit()
     return _fetch_feedback(conn, feedback_id)
 

@@ -357,8 +357,8 @@ CREATE TABLE assignments (
     due_date      TEXT,
     budget_hours  REAL,
     audit_steps   TEXT NOT NULL DEFAULT '',
-    status        TEXT NOT NULL DEFAULT 'waiting_acceptance' CHECK (status IN (
-        'waiting_acceptance','in_progress','under_review','completed'
+    status        TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN (
+        'in_progress','under_review','completed'
     )),
     created_at    TEXT NOT NULL DEFAULT (now_text()),
     updated_at    TEXT NOT NULL DEFAULT (now_text())
@@ -366,9 +366,10 @@ CREATE TABLE assignments (
 CREATE INDEX idx_assignments_assignee_status ON assignments(assigned_to, status);
 ```
 
-**ขั้นตอนงานตรวจสอบ:** ใช้ 4 สถานะเท่านั้น: `waiting_acceptance → in_progress → under_review → completed`.
-ผู้รับงาน (`risk_analyst`) เริ่มดำเนินการและส่งงานเข้าสู่การสอบทาน; ผู้ตรวจสอบโครงการ
-(`project_auditor`) ปิดงานที่ `under_review` ได้โดยตรง ไม่มีขั้นอนุมัติแยก.
+**ขั้นตอนงานตรวจสอบ:** โครงการที่ยังไม่มี assignment แสดงเป็น `รอมอบหมาย`; เมื่อผู้ตรวจสอบ
+มอบหมายงานแล้ว assignment จะเริ่มที่ `in_progress` ทันที. การส่ง feedback ของผู้รับงาน
+(`risk_analyst`) จะเปลี่ยนเป็น `under_review` และผู้ตรวจสอบโครงการ (`project_auditor`)
+อนุมัติ feedback แล้วเปลี่ยนเป็น `completed`.
 State machine + role gate อยู่ที่ `src/routers/audit.py` และทุก transition บันทึกลง
 `assignment_status_history` โดยไม่ต้องเพิ่มตารางแยก
 

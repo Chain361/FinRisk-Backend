@@ -129,16 +129,15 @@ This scope check is a backend responsibility. Frontend filters are UX only.
 
 ```mermaid
 stateDiagram-v2
-  [*] --> waiting_acceptance
-  waiting_acceptance --> in_progress: analyst เริ่มดำเนินการ
-  in_progress --> under_review: analyst ส่งให้สอบทาน
-  under_review --> completed: auditor ปิดงาน
+  [*] --> unassigned
+  unassigned --> in_progress: auditor มอบหมายงาน
+  in_progress --> under_review: analyst ส่ง feedback
+  under_review --> completed: auditor อนุมัติ feedback
   completed --> [*]
 ```
 
-`admin` ทำ transition ได้ทุกขั้น; ผู้รับงาน (`risk_analyst`) เดินสองขั้นแรก และผู้ตรวจสอบโครงการ
-(`project_auditor`) ปิดงานหลังสอบทาน ทุกการเปลี่ยนสถานะเขียนแถวลง `assignment_status_history`
-และสร้าง notification ให้ฝ่ายที่เกี่ยวข้อง (`src/notify.py`)
+`unassigned` เป็นสถานะที่คำนวณจากการไม่มี assignment จึงไม่ถูกเก็บในตาราง `assignments`.
+ทุกการเปลี่ยน assignment status เขียนแถวลง `assignment_status_history`.
 
 ## Database Module
 

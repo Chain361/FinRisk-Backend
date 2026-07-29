@@ -127,7 +127,7 @@ def test_audit_assignments_role_gate():
     r = client.get("/audit/assignments", headers={"X-Username": "analyst1"})
     assert r.status_code == 200
     assert len(r.json()) == 1
-    assert r.json()[0]["status"] in ("waiting_acceptance", "in_progress", "under_review", "completed")
+    assert r.json()[0]["status"] in ("in_progress", "under_review", "completed")
     # local_executive / public_user ไม่มีสิทธิ์งาน assignment ตาม roles.md
     for username in ("thachang_user", "public1"):
         r = client.get("/audit/assignments", headers={"X-Username": username})
@@ -277,27 +277,36 @@ def test_auditor_can_create_assignment_with_history():
     )
     assert response.status_code == 201
     assignment_id = response.json()["assignment_id"]
+    feedback_id = None
 
     try:
         detail = client.get(f"/audit/assignments/{assignment_id}", headers=auditor_headers)
         assert detail.status_code == 200
-        assert detail.json()["assignment"]["status"] == "waiting_acceptance"
+        assert detail.json()["assignment"]["status"] == "in_progress"
         assert detail.json()["assignment"]["assignee_entity_type"] == "user"
         assert detail.json()["assignment"]["assignee_user_label"] == f"user:{analyst['username']}"
-        assert detail.json()["status_history"][0]["new_status"] == "waiting_acceptance"
+        assert detail.json()["status_history"][0]["new_status"] == "in_progress"
 
         analyst_headers = {"X-Username": analyst["username"]}
         mine = client.get("/audit/assignments/my", headers=analyst_headers)
         assert mine.status_code == 200
         assert any(item["assignment_id"] == assignment_id for item in mine.json())
 
-        started = client.patch(
-            f"/audit/assignments/{assignment_id}/status",
+        submitted = client.post(
+            "/audit/feedback",
             headers=analyst_headers,
-            json={"status": "in_progress"},
+            json={
+                "project_id": str(project["project_id"]),
+                "feedback_text": "ส่งผลการตรวจสอบ",
+                "concern_level": "medium",
+                "likelihood_score": 3,
+                "impact_score": 3,
+                "status": "submitted",
+            },
         )
-        assert started.status_code == 200
-        assert started.json()["status"] == "in_progress"
+        assert submitted.status_code == 201
+        feedback_id = submitted.json()["feedback_id"]
+        assert client.get(f"/audit/assignments/{assignment_id}", headers=analyst_headers).json()["assignment"]["status"] == "under_review"
 
         denied_delete = client.delete(f"/audit/assignments/{assignment_id}", headers=analyst_headers)
         assert denied_delete.status_code == 403
@@ -312,6 +321,8 @@ def test_auditor_can_create_assignment_with_history():
         assert missing.status_code == 404
     finally:
         with db_session() as con:
+            if feedback_id is not None:
+                con.execute("DELETE FROM auditor_feedback WHERE feedback_id = ?", (feedback_id,))
             con.execute("DELETE FROM notifications WHERE ref_type = 'assignment' AND ref_id = ?", (str(assignment_id),))
             con.execute("DELETE FROM assignment_status_history WHERE assignment_id = ?", (assignment_id,))
             con.execute("DELETE FROM assignments WHERE assignment_id = ?", (assignment_id,))
@@ -344,6 +355,7 @@ def test_assignment_attachments_and_clarifications():
     )
     assert created.status_code == 201
     assignment_id = created.json()["assignment_id"]
+    feedback_id = None
     analyst_headers = {"X-Username": "analyst1"}
     other_subdistrict_headers = {"X-Username": "auditor2"}  # ปิงโค้ง — ต้องไม่มีสิทธิ์เห็นงานนี้
 
@@ -718,7 +730,7 @@ def test_admin_data_upload():
 
 
 def test_assignment_workflow_full_flow():
-    """งานเดิน 4 สถานะโดยไม่มีขั้นอนุมัติแยก."""
+    """มอบหมาย → ส่ง feedback → อนุมัติ feedback เปลี่ยนสถานะงานครบตาม workflow."""
     from src.database import db_session
 
     auditor_headers = {"X-Username": "auditor1"}
@@ -746,30 +758,29 @@ def test_assignment_workflow_full_flow():
     assert created.status_code == 201
     assignment_id = created.json()["assignment_id"]
 
-    def set_status(headers, status, note=None):
-        payload = {"status": status}
-        if note is not None:
-            payload["note"] = note
-        return client.patch(f"/audit/assignments/{assignment_id}/status", headers=headers, json=payload)
-
     try:
-        # ผู้รับงานเริ่มงานและส่งให้สอบทาน
-        for headers, status in [
-            (analyst_headers, "in_progress"),
-            (analyst_headers, "under_review"),
-        ]:
-            r = set_status(headers, status)
-            assert r.status_code == 200, r.text
-            assert r.json()["status"] == status
+        assert created.json()["status"] == "in_progress"
+        submitted = client.post(
+            "/audit/feedback",
+            headers=analyst_headers,
+            json={
+                "project_id": str(project["project_id"]),
+                "feedback_text": "ส่งผลการตรวจสอบเพื่อสอบทาน",
+                "concern_level": "medium",
+                "likelihood_score": 3,
+                "impact_score": 3,
+                "status": "submitted",
+            },
+        )
+        assert submitted.status_code == 201, submitted.text
+        feedback_id = submitted.json()["feedback_id"]
+        assert client.get(f"/audit/assignments/{assignment_id}", headers=auditor_headers).json()["assignment"]["status"] == "under_review"
 
-        # ผู้รับงานปิดงานเองไม่ได้
-        r = set_status(analyst_headers, "completed")
-        assert r.status_code == 409
-
-        # ผู้ตรวจสอบโครงการปิดงานได้โดยตรง
-        r = set_status(auditor_headers, "completed")
+        r = client.patch(
+            f"/audit/feedback/{submitted.json()['feedback_id']}/resolve", headers=auditor_headers
+        )
         assert r.status_code == 200
-        assert r.json()["status"] == "completed"
+        assert client.get(f"/audit/assignments/{assignment_id}", headers=auditor_headers).json()["assignment"]["status"] == "completed"
 
         history = client.get(f"/audit/assignments/{assignment_id}", headers=auditor_headers).json()
         completion_entries = [
@@ -779,6 +790,8 @@ def test_assignment_workflow_full_flow():
         assert completion_entries, "ต้องมีหลักฐานผู้ปิดงาน+เวลาใน assignment_status_history"
     finally:
         with db_session() as con:
+            if feedback_id is not None:
+                con.execute("DELETE FROM auditor_feedback WHERE feedback_id = ?", (feedback_id,))
             con.execute("DELETE FROM notifications WHERE ref_type = 'assignment' AND ref_id = ?", (str(assignment_id),))
             con.execute("DELETE FROM assignment_status_history WHERE assignment_id = ?", (assignment_id,))
             con.execute("DELETE FROM assignments WHERE assignment_id = ?", (assignment_id,))

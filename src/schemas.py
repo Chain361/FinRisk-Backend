@@ -137,7 +137,6 @@ class AuditReportOut(BaseModel):
 
 AssignmentPriority = Literal["low", "normal", "high"]
 AssignmentStatus = Literal[
-    "waiting_acceptance",
     "in_progress",
     "under_review",
     "completed",

@@ -249,8 +249,9 @@ data_modelling/
 **Risk results** (เขียนโดย engine ทุก run) — `assessment_runs`, `project_risk_results`,
 `project_risk_scores`, `annual_risk_results`
 
-**Audit workflow + notifications** — `assignments` (`waiting_acceptance` → `in_progress` →
-`under_review` → `completed`; ไม่มีขั้นอนุมัติแยก), `assignment_status_history`, `auditor_feedback`
+**Audit workflow + notifications** — โครงการ `unassigned` จะเป็น `in_progress` ทันทีเมื่อมอบหมาย,
+จากนั้น analyst ส่ง feedback → `under_review` และ auditor อนุมัติ feedback → `completed`,
+พร้อม `assignment_status_history` และ `auditor_feedback`
 (CRUD + resolve workflow ใช้งานจริงแล้ว), `notifications` (bell icon ฝั่ง frontend),
 `access_log` (accountability trail, admin ดูได้ที่ `GET /audit/access-log`)
 และ log retention tables (`access_log_archive`, `access_log_holds`, `log_retention_runs`,

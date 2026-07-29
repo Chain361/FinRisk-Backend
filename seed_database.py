@@ -226,8 +226,8 @@ CREATE TABLE assignments (
     due_date      TEXT,
     budget_hours  REAL,
     audit_steps   TEXT NOT NULL DEFAULT '',
-    status        TEXT NOT NULL DEFAULT 'waiting_acceptance' CHECK (status IN (
-        'waiting_acceptance','in_progress','under_review','completed'
+    status        TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN (
+        'in_progress','under_review','completed'
     )),
     created_at    TEXT NOT NULL DEFAULT (now_text()),
     updated_at    TEXT NOT NULL DEFAULT (now_text())
@@ -1540,7 +1540,7 @@ def seed_assignments(cur):
         top_project.setdefault(sid, pid)
 
     # (subdistrict ลำดับ, สถานะปลายทาง, note ตอนสร้าง)
-    demo_flow = ["waiting_acceptance", "in_progress", "under_review"]
+    demo_flow = ["in_progress", "under_review", "completed"]
 
     n = 0
     now = datetime.now()
@@ -1562,7 +1562,7 @@ def seed_assignments(cur):
         cur.execute("""INSERT INTO assignment_status_history
             (assignment_id, old_status, new_status, changed_by, note, created_at)
             VALUES (?,?,?,?,?,?)""",
-            (assignment_id, None, "waiting_acceptance", auditor_id, "สร้างและมอบหมายงาน", created_at))
+            (assignment_id, None, "in_progress", auditor_id, "สร้างและมอบหมายงานเพื่อดำเนินการ", created_at))
         cur.execute("""INSERT INTO notifications
             (user_id, type, message, ref_type, ref_id, created_at)
             VALUES (?,?,?,?,?,?)""",
@@ -1571,20 +1571,20 @@ def seed_assignments(cur):
 
         # เดินสถานะต่อจนถึงปลายทาง เพื่อให้ status_history มีหลายแถว (เหมือน flow จริง)
         path = {
-            "in_progress": ["in_progress"],
-            "under_review": ["in_progress", "under_review"],
+            "under_review": ["under_review"],
+            "completed": ["under_review", "completed"],
         }.get(target_status, [])
-        prev = "waiting_acceptance"
+        prev = "in_progress"
         for step_i, step in enumerate(path):
             step_ts = (now - timedelta(days=5 - step_i - 1)).strftime("%Y-%m-%d %H:%M:%S")
-            changed_by = analyst_id
+            changed_by = auditor_id if step == "completed" else analyst_id
             cur.execute("""INSERT INTO assignment_status_history
                 (assignment_id, old_status, new_status, changed_by, note, created_at)
                 VALUES (?,?,?,?,?,?)""",
                 (assignment_id, prev, step, changed_by, None, step_ts))
             prev = step
         n += 1
-    log(f"assignments (demo): {n} รายการ กระจาย {len(pairs)} ตำบล ครบสถานะ waiting_acceptance/in_progress/under_review")
+    log(f"assignments (demo): {n} รายการ กระจาย {len(pairs)} ตำบล ครบสถานะ in_progress/under_review/completed")
 
 
 # ---------------------------------------------------------------------------
