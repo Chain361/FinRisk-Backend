@@ -11,6 +11,7 @@ import time
 from contextlib import contextmanager
 
 import psycopg
+from psycopg_pool import ConnectionPool
 
 from .config import DATABASE_URL
 
@@ -85,13 +86,28 @@ def _connect() -> Connection:
     raise last_error
 
 
+# Pool ของ connection ที่ใช้ซ้ำข้าม request ได้ (module-level — อยู่รอดข้าม warm invocation บน
+# Vercel serverless และตลอดอายุ process ตอน uvicorn --reload) แทนที่จะเปิด TCP+TLS ใหม่ไปหา
+# Neon (คนละเครือข่าย ไม่ใช่ localhost) ทุกครั้งที่มี request เข้ามาที่ get_db()
+_pool = ConnectionPool(
+    DATABASE_URL,
+    connection_class=Connection,
+    kwargs={
+        "row_factory": _sqlite_row_factory,
+        "cursor_factory": Cursor,
+        "autocommit": False,
+        "connect_timeout": _CONNECT_TIMEOUT_SECONDS,
+    },
+    min_size=1,
+    max_size=5,
+    open=True,
+)
+
+
 def get_db():
-    """FastAPI dependency — yield connection แล้วปิดให้อัตโนมัติ"""
-    conn = _connect()
-    try:
+    """FastAPI dependency — ยืม connection จาก pool แล้วคืนกลับให้อัตโนมัติ"""
+    with _pool.connection() as conn:
         yield conn
-    finally:
-        conn.close()
 
 
 @contextmanager
