@@ -11,7 +11,7 @@ from datetime import date, datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 
-from ..auth import require_roles
+from ..auth import get_current_user
 from ..database import Connection, get_db
 
 router = APIRouter(prefix="/public", tags=["public"])
@@ -20,6 +20,20 @@ router = APIRouter(prefix="/public", tags=["public"])
 # ไม่ผ่าน scope_subdistrict_ids ตั้งใจ จึงจำกัด role ตรงนี้แทน กัน role ที่ปกติถูก scope
 # (project_auditor/risk_analyst/local_executive) เห็นข้อมูลข้ามตำบลผ่านทางอ้อม
 EXPORT_ROLES = ("admin", "regional_supervisor", "public_user")
+EXPORT_FEATURE = "public_projects_export"
+
+
+def require_export_access(user: dict = Depends(get_current_user)) -> dict:
+    if user["role"] in EXPORT_ROLES:
+        return user
+
+    if EXPORT_FEATURE in (user.get("allowed_features") or []):
+        return user
+
+    raise HTTPException(
+        status_code=403,
+        detail="ไม่มีสิทธิ์เข้าถึง export ข้อมูลนี้",
+    )
 # อักขระที่ Excel/Sheets ตีความเป็นจุดเริ่มสูตร — ต้อง escape กัน formula injection ตอนเปิดไฟล์
 _FORMULA_PREFIXES = ("=", "+", "-", "@")
 
@@ -47,7 +61,7 @@ def _csv_safe(value):
 @router.get("/projects/export")
 def export_projects(
     format: str = Query(...),
-    user: dict = Depends(require_roles(*EXPORT_ROLES)),
+    user: dict = Depends(require_export_access),
     conn: Connection = Depends(get_db),
 ):
     if format not in ("csv", "json"):

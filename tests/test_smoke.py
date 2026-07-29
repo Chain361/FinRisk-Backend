@@ -964,3 +964,42 @@ def test_public_projects_export_role_gate():
     for username in ("admin", "supervisor1", "public1"):
         r = client.get("/public/projects/export", params={"format": "csv"}, headers={"X-Username": username})
         assert r.status_code == 200, username
+
+def test_public_projects_export_feature_flag_grants_access():
+    """role ที่ไม่อยู่ใน EXPORT_ROLES และไม่มี public_projects_export ต้องถูกปฏิเสธ"""
+    from src.database import db_session
+
+    username = "auditor1"
+
+    # เก็บสิทธิ์เดิมไว้ แล้วเพิ่ม flag ชั่วคราวสำหรับทดสอบ
+    with db_session() as con:
+        row = con.execute(
+            "SELECT allowed_features FROM users WHERE username = ?",
+            (username,),
+        ).fetchone()
+        original_features = list(row["allowed_features"] or [])
+
+        con.execute(
+            "UPDATE users SET allowed_features = ? WHERE username = ?",
+            (["public_projects_export"], username),
+        )
+        con.commit()
+
+    try:
+        response = client.get(
+            "/public/projects/export",
+            params={"format": "json"},
+            headers={"X-Username": username},
+        )
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/json")
+        assert response.json()["data"]
+    finally:
+        # คืนค่าเดิมเสมอ แม้ test ล้มเหลว
+        with db_session() as con:
+            con.execute(
+                "UPDATE users SET allowed_features = ? WHERE username = ?",
+                (original_features, username),
+            )
+            con.commit()
