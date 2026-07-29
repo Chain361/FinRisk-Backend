@@ -194,12 +194,6 @@ class ChatTurn(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
 
 
-class ChatMessageRequest(BaseModel):
-    message: str = Field(min_length=1, max_length=2000)
-    # ประวัติแชทฝั่ง client ถืออยู่ ส่งมาทุกครั้ง — backend ไม่เก็บ conversation state
-    history: list[ChatTurn] = Field(default_factory=list, max_length=40)
-
-
 class LogRetentionRunOut(BaseModel):
     run_id: int
     run_at: str
