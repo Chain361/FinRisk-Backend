@@ -50,6 +50,24 @@ def test_admin_sees_all():
     assert summary["total"] > 0
 
 
+def test_risk_summary_uses_project_filters_without_bypassing_scope():
+    """summary ต้องนับชุดเดียวกับ /projects และ filter ตำบลต้องไม่ข้าม scope."""
+    admin = {"X-Username": "admin"}
+    params = {"subdistrict_id": 1, "budget_year": 2568, "risk_level": "medium"}
+
+    projects = client.get("/projects", headers=admin, params=params)
+    summary = client.get("/risk/summary", headers=admin, params=params)
+    assert projects.status_code == summary.status_code == 200
+    assert summary.json()["total"] == len(projects.json())
+
+    # auditor1 อยู่ตำบลท่าช้าง (id=1); ขอ summary ของตำบลอื่นต้องไม่ได้ข้อมูล
+    outside_scope = client.get(
+        "/risk/summary", headers={"X-Username": "auditor1"}, params={"subdistrict_id": 2}
+    )
+    assert outside_scope.status_code == 200
+    assert outside_scope.json() == {"total": 0, "by_level": {}}
+
+
 def test_financial_statements_routes():
     headers = {"X-Username": "thachang_user"}
 
