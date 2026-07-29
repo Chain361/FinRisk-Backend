@@ -3,6 +3,7 @@ fastapi==0.115.*
 uvicorn[standard]==0.32.*
 pydantic==2.*
 psycopg[binary]==3.*   # PostgreSQL driver — ใช้ทั้ง API และ seed_database.py
+psycopg-pool==3.*      # connection pool ให้ get_db() ใช้ซ้ำ connection ข้าม request แทนเปิดใหม่ทุกครั้ง
 bcrypt==4.*             # password hashing (มี salt ในตัว)
 PyJWT==2.*              # ออก/ตรวจ JWT access token
 python-multipart==0.0.* # FastAPI Form/File (endpoint อัปโหลด CSV)

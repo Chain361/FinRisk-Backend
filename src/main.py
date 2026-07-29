@@ -12,6 +12,7 @@ import os
 import jwt
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.background import BackgroundTask
 
 from .audit_log import record_access, should_log
 from .config import (
@@ -24,7 +25,7 @@ from .config import (
     JWT_SECRET_DEFAULT,
     PINECONE_API_KEY,
 )
-from .database import _connect
+from .database import _connect, _pool
 from .error_log import record_error_debug
 from .routers import (
     admin,
@@ -81,7 +82,11 @@ def _username_for_log(request: Request) -> str | None:
 
 @app.middleware("http")
 async def access_log_middleware(request: Request, call_next):
-    """บันทึกการเข้าถึงของผู้ใช้ที่ login แล้ว (accountability trail) — best-effort ไม่ทำให้ request พัง"""
+    """บันทึกการเข้าถึงของผู้ใช้ที่ login แล้ว (accountability trail) — best-effort ไม่ทำให้ request พัง
+
+    audit access log เขียนเป็น BackgroundTask (รันหลังส่ง response กลับให้ client แล้ว) แทนการ
+    await ตรงนี้ — record_access เปิด connection ของตัวเอง + SELECT/INSERT/commit ซึ่งถ้า await
+    ตรงนี้จะบวกเวลานั้นเข้าไปใน response time ของทุก request แบบไม่จำเป็น"""
     username = _username_for_log(request)
     try:
         response = await call_next(request)
@@ -116,7 +121,8 @@ async def access_log_middleware(request: Request, call_next):
         ip = forwarded.split(",")[0].strip() if forwarded else (
             request.client.host if request.client else None
         )
-        record_access(
+        response.background = BackgroundTask(
+            record_access,
             username=username,
             method=request.method,
             path=request.url.path,
@@ -193,3 +199,8 @@ def meta():
 @app.get("/", tags=["meta"])
 def root():
     return {"service": API_TITLE, "version": API_VERSION, "docs": "/docs"}
+
+
+@app.on_event("shutdown")
+def _close_pool():
+    _pool.close()
