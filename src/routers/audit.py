@@ -676,6 +676,12 @@ def list_feedback(
             return []
         where_clauses.append(f"p.subdistrict_id IN ({','.join('?' * len(allowed))})")
         params.extend(allowed)
+    if user["role"] == "risk_analyst":
+        where_clauses.append(
+            "EXISTS (SELECT 1 FROM assignments a "
+            "WHERE a.project_id = f.project_id AND a.assigned_to = ?)"
+        )
+        params.append(user["user_id"])
     where_sql = "WHERE " + " AND ".join(where_clauses)
 
     rows = conn.execute(
@@ -778,6 +784,7 @@ def update_feedback(
     ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="ไม่พบความคิดเห็น")
+    _project_in_scope(conn, row["project_id"], user)
     if row["user_id"] != user["user_id"] and user["role"] not in RESOLVE_ROLES:
         raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์แก้ไขความคิดเห็นนี้")
     if row["status"] != "draft":
@@ -837,10 +844,11 @@ def delete_feedback(
     conn: Connection = Depends(get_db),
 ):
     row = conn.execute(
-        "SELECT user_id FROM auditor_feedback WHERE feedback_id = ?", (feedback_id,)
+        "SELECT user_id, project_id FROM auditor_feedback WHERE feedback_id = ?", (feedback_id,)
     ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="ไม่พบความคิดเห็น")
+    _project_in_scope(conn, row["project_id"], user)
     if row["user_id"] != user["user_id"] and user["role"] not in RESOLVE_ROLES:
         raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์ลบความคิดเห็นนี้")
 

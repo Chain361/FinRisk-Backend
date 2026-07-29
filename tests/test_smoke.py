@@ -153,6 +153,9 @@ def test_risk_analyst_can_only_view_assigned_projects():
     visible = client.get("/projects", headers=analyst_headers)
     assert visible.status_code == 200
     assert {str(project["project_id"]) for project in visible.json()} == assigned_ids
+    feedback = client.get("/audit/feedback", headers=analyst_headers)
+    assert feedback.status_code == 200
+    assert all(str(item["project_id"]) in assigned_ids for item in feedback.json())
 
     # เลือกโครงการอื่นในตำบลเดียวกัน เพื่อยืนยันว่าเข้าผ่านด้วย URL ตรงไม่ได้.
     same_subdistrict_projects = client.get(
