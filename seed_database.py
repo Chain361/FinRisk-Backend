@@ -1820,6 +1820,19 @@ def _tables_exist(cur) -> bool:
     return cur.fetchone() is not None
 
 
+def _acquire_seed_lock(cur) -> None:
+    """Serialize seed runs that target the same PostgreSQL database.
+
+    The lock is session-scoped, so it also remains in effect across commits and
+    a `DROP SCHEMA public CASCADE` performed by `--force`.
+    """
+    cur.execute("SELECT pg_advisory_lock(hashtext('finrisk:seed_database'))")
+
+
+def _release_seed_lock(cur) -> None:
+    cur.execute("SELECT pg_advisory_unlock(hashtext('finrisk:seed_database'))")
+
+
 def main():
     ap = argparse.ArgumentParser(description="สร้าง schema + seed + รัน risk engine ลง PostgreSQL")
     ap.add_argument("--force", action="store_true", help="ลบตารางเดิมทั้งหมดก่อนสร้างใหม่")
@@ -1848,66 +1861,82 @@ def main():
     con = _connect()
     cur = con.cursor()
 
-    if _tables_exist(cur):
-        if args.force:
-            cur.execute("DROP SCHEMA public CASCADE")
-            cur.execute("CREATE SCHEMA public")
-            con.commit()
-        elif args.if_missing:
-            print("มี schema อยู่แล้วใน DATABASE_URL นี้ — ข้าม (ไม่แตะข้อมูลเดิม)")
+    # This database is shared by the team.  Without a session-level lock,
+    # another `seed_database.py --force` can drop `public` after this process
+    # has seeded and scored data but before validation finishes.
+    try:
+        _acquire_seed_lock(cur)
+
+        if _tables_exist(cur):
+            if args.force:
+                cur.execute("DROP SCHEMA public CASCADE")
+                cur.execute("CREATE SCHEMA public")
+                con.commit()
+            elif args.if_missing:
+                print("มี schema อยู่แล้วใน DATABASE_URL นี้ — ข้าม (ไม่แตะข้อมูลเดิม)")
+                return
+            else:
+                sys.exit("มี schema เดิมอยู่แล้วใน DATABASE_URL นี้ — ใช้ --force เพื่อลบแล้วสร้างใหม่")
+
+        print("[2/5] สร้าง schema (DDL §3–§8)")
+        exec_ddl(cur, DDL)
+
+        print("[3/5] Seed ตามลำดับ §9.1")
+        sub_id = seed_master_data(cur, proj_rows, fin_rows)
+        seed_vendors(cur, proj_rows)
+        seed_projects(cur, proj_rows, sub_id)
+        seed_financial(cur, fin_rows, sub_id)
+        seed_risk_factors(cur)
+        seed_users_config(cur, sub_id)
+        seed_legal_layer(cur, sub_id)   # legal linkage + mock 2 โครงการ (ต้องมาก่อน engine — L1/L3 อ่าน project_documents)
+        con.commit()
+
+        print("[4/5] รัน risk engine ครั้งแรก")
+        snapshot = json.dumps(
+            [dict(factor_code=r[0], scope=r[1], params_json=r[2], weight=r[3], severity=r[4],
+                  impact_level=r[5], legal_ref=r[6], enabled=r[7])
+             for r in cur.execute("""SELECT factor_code, scope, params_json, weight, severity,
+                  impact_level, legal_ref, enabled FROM risk_factors""")],
+            ensure_ascii=False)
+        cur.execute(
+            """INSERT INTO assessment_runs (triggered_by, factor_config_snapshot, note)
+               VALUES (?,?,?) RETURNING run_id""",
+            ("system", snapshot, "initial seed run"))
+        run_id = cur.fetchone()["run_id"]
+        run_project_engine(cur, run_id)
+        run_annual_engine(cur, run_id)
+        seed_auditor_feedback(cur)  # หลัง engine — เลือกโครงการจาก risk score จริง
+        seed_assignments(cur)       # หลัง engine — เลือกโครงการจาก risk score จริงเหมือนกัน
+        seed_audit_reports(cur)
+        con.commit()
+
+        print("[5/5] Validation (§9.5)")
+        ok = validate(cur)
+        cross_check_pingkhong(cur)
+
+        # สรุปภาพรวม
+        print("\nสรุป risk (run ล่าสุด):")
+        for row in cur.execute("""SELECT s.name_th, prs.risk_level, COUNT(*) FROM project_risk_scores prs
+            JOIN projects p ON p.project_id=prs.project_id
+            JOIN subdistricts s ON s.subdistrict_id=p.subdistrict_id
+            WHERE prs.run_id=? GROUP BY s.name_th, prs.risk_level ORDER BY s.name_th""", (run_id,)):
+            print(f"  {row[0]}: {row[1]} = {row[2]} โครงการ")
+
+        if not ok:
+            sys.exit("\nVALIDATION FAILED — ตรวจรายการ [FAIL] ด้านบน")
+        print("\nเสร็จสมบูรณ์ → PostgreSQL (DATABASE_URL)")
+    finally:
+        try:
+            # End any read/error transaction before the cleanup query.  The
+            # data-changing phases above have already committed explicitly.
+            con.rollback()
+            _release_seed_lock(cur)
+        except Exception:
+            # Closing a PostgreSQL session releases every session advisory
+            # lock, including when the preceding transaction was aborted.
+            pass
+        finally:
             con.close()
-            sys.exit(0)
-        else:
-            sys.exit("มี schema เดิมอยู่แล้วใน DATABASE_URL นี้ — ใช้ --force เพื่อลบแล้วสร้างใหม่")
-
-    print("[2/5] สร้าง schema (DDL §3–§8)")
-    exec_ddl(cur, DDL)
-
-    print("[3/5] Seed ตามลำดับ §9.1")
-    sub_id = seed_master_data(cur, proj_rows, fin_rows)
-    seed_vendors(cur, proj_rows)
-    seed_projects(cur, proj_rows, sub_id)
-    seed_financial(cur, fin_rows, sub_id)
-    seed_risk_factors(cur)
-    seed_users_config(cur, sub_id)
-    seed_legal_layer(cur, sub_id)   # legal linkage + mock 2 โครงการ (ต้องมาก่อน engine — L1/L3 อ่าน project_documents)
-    con.commit()
-
-    print("[4/5] รัน risk engine ครั้งแรก")
-    snapshot = json.dumps(
-        [dict(factor_code=r[0], scope=r[1], params_json=r[2], weight=r[3], severity=r[4],
-              impact_level=r[5], legal_ref=r[6], enabled=r[7])
-         for r in cur.execute("""SELECT factor_code, scope, params_json, weight, severity,
-              impact_level, legal_ref, enabled FROM risk_factors""")],
-        ensure_ascii=False)
-    cur.execute(
-        """INSERT INTO assessment_runs (triggered_by, factor_config_snapshot, note)
-           VALUES (?,?,?) RETURNING run_id""",
-        ("system", snapshot, "initial seed run"))
-    run_id = cur.fetchone()["run_id"]
-    run_project_engine(cur, run_id)
-    run_annual_engine(cur, run_id)
-    seed_auditor_feedback(cur)  # หลัง engine — เลือกโครงการจาก risk score จริง
-    seed_assignments(cur)       # หลัง engine — เลือกโครงการจาก risk score จริงเหมือนกัน
-    seed_audit_reports(cur)
-    con.commit()
-
-    print("[5/5] Validation (§9.5)")
-    ok = validate(cur)
-    cross_check_pingkhong(cur)
-
-    # สรุปภาพรวม
-    print("\nสรุป risk (run ล่าสุด):")
-    for row in cur.execute("""SELECT s.name_th, prs.risk_level, COUNT(*) FROM project_risk_scores prs
-        JOIN projects p ON p.project_id=prs.project_id
-        JOIN subdistricts s ON s.subdistrict_id=p.subdistrict_id
-        WHERE prs.run_id=? GROUP BY s.name_th, prs.risk_level ORDER BY s.name_th""", (run_id,)):
-        print(f"  {row[0]}: {row[1]} = {row[2]} โครงการ")
-
-    con.close()
-    if not ok:
-        sys.exit("\nVALIDATION FAILED — ตรวจรายการ [FAIL] ด้านบน")
-    print("\nเสร็จสมบูรณ์ → PostgreSQL (DATABASE_URL)")
 
 
 if __name__ == "__main__":
