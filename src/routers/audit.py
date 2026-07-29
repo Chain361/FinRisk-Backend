@@ -538,7 +538,16 @@ def delete_assignment(
     conn: Connection = Depends(get_db),
 ):
     _assignment_in_scope(conn, assignment_id, user)
+    # Hard delete ต้องลบข้อมูลลูกก่อน เพราะ assignment เป็นเจ้าของ workflow ทั้งชุด
+    # (รายงานผลตรวจ, หลักฐาน, กระทู้, ประวัติสถานะ และแจ้งเตือนอ้างอิงงานนี้)
+    conn.execute("DELETE FROM audit_reports WHERE assignment_id = ?", (assignment_id,))
+    conn.execute("DELETE FROM assignment_attachments WHERE assignment_id = ?", (assignment_id,))
+    conn.execute("DELETE FROM assignment_clarifications WHERE assignment_id = ?", (assignment_id,))
     conn.execute("DELETE FROM assignment_status_history WHERE assignment_id = ?", (assignment_id,))
+    conn.execute(
+        "DELETE FROM notifications WHERE ref_type = 'assignment' AND ref_id = ?",
+        (str(assignment_id),),
+    )
     conn.execute("DELETE FROM assignments WHERE assignment_id = ?", (assignment_id,))
     conn.commit()
     return None

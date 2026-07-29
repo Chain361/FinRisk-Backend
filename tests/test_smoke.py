@@ -358,11 +358,32 @@ def test_auditor_can_create_assignment_with_history():
         denied_auditor_delete = client.delete(f"/audit/assignments/{assignment_id}", headers=auditor_headers)
         assert denied_auditor_delete.status_code == 403
 
+        # assignment ที่มีรายงานผลตรวจ/ประวัติสถานะต้องลบได้ทั้งชุด ไม่ติด FK
+        with db_session() as con:
+            con.execute(
+                """INSERT INTO audit_reports
+                   (assignment_id, work_process, objective, findings)
+                   VALUES (?,?,?,?)""",
+                (assignment_id, "ทดสอบการลบ", "ทดสอบ FK", "รายงานชั่วคราว"),
+            )
+            con.commit()
+
         deleted = client.delete(f"/audit/assignments/{assignment_id}", headers={"X-Username": "admin"})
         assert deleted.status_code == 204
 
         missing = client.get(f"/audit/assignments/{assignment_id}", headers={"X-Username": "admin"})
         assert missing.status_code == 404
+        with db_session() as con:
+            assert con.execute(
+                "SELECT COUNT(*) FROM audit_reports WHERE assignment_id = ?", (assignment_id,)
+            ).fetchone()[0] == 0
+            assert con.execute(
+                "SELECT COUNT(*) FROM assignment_status_history WHERE assignment_id = ?", (assignment_id,)
+            ).fetchone()[0] == 0
+            assert con.execute(
+                "SELECT COUNT(*) FROM notifications WHERE ref_type = 'assignment' AND ref_id = ?",
+                (str(assignment_id),),
+            ).fetchone()[0] == 0
     finally:
         with db_session() as con:
             if feedback_id is not None:
