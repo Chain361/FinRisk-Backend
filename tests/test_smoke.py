@@ -127,11 +127,55 @@ def test_audit_assignments_role_gate():
     r = client.get("/audit/assignments", headers={"X-Username": "analyst1"})
     assert r.status_code == 200
     assert len(r.json()) == 1
-    assert r.json()[0]["status"] in ("in_progress", "under_review", "completed")
-    # local_executive / public_user ไม่มีสิทธิ์งาน assignment ตาม roles.md
-    for username in ("thachang_user", "public1"):
-        r = client.get("/audit/assignments", headers={"X-Username": username})
-        assert r.status_code == 403, username
+    assert r.json()[0]["status"] in ("waiting_acceptance", "in_progress", "under_review", "completed")
+    # อบต. อ่านสถานะ assignment ในตำบลของตัวเองได้ แต่ยังไม่มีสิทธิ์มอบหมายงาน.
+    local = client.get("/audit/assignments", headers={"X-Username": "thachang_user"})
+    assert local.status_code == 200
+    assert all(item["subdistrict_id"] == 1 for item in local.json())
+    existing = local.json()[0]
+    write_attempt = client.post(
+        "/audit/assignments",
+        headers={"X-Username": "thachang_user"},
+        json={"project_id": str(existing["project_id"]), "assignee_id": existing["assigned_to"]},
+    )
+    assert write_attempt.status_code == 403
+
+    r = client.get("/audit/assignments", headers={"X-Username": "public1"})
+    assert r.status_code == 403
+
+
+def test_risk_analyst_can_only_view_assigned_projects():
+    analyst_headers = {"X-Username": "analyst1"}
+    assigned_ids = {
+        str(item["project_id"])
+        for item in client.get("/audit/assignments", headers=analyst_headers).json()
+    }
+    visible = client.get("/projects", headers=analyst_headers)
+    assert visible.status_code == 200
+    assert {str(project["project_id"]) for project in visible.json()} == assigned_ids
+    feedback = client.get("/audit/feedback", headers=analyst_headers)
+    assert feedback.status_code == 200
+    assert all(str(item["project_id"]) in assigned_ids for item in feedback.json())
+
+    # เลือกโครงการอื่นในตำบลเดียวกัน เพื่อยืนยันว่าเข้าผ่านด้วย URL ตรงไม่ได้.
+    same_subdistrict_projects = client.get(
+        "/projects", headers={"X-Username": "auditor1"}
+    ).json()
+    hidden = next(
+        project
+        for project in same_subdistrict_projects
+        if str(project["project_id"]) not in assigned_ids
+    )
+    assert client.get(f"/projects/{hidden['project_id']}", headers=analyst_headers).status_code == 403
+    assert client.get(
+        f"/risk/projects/{hidden['project_id']}/legal", headers=analyst_headers
+    ).status_code == 403
+
+
+def test_notifications_are_limited_to_workflow_roles():
+    for username in ("admin", "supervisor1", "thachang_user", "public1"):
+        response = client.get("/notifications", headers={"X-Username": username})
+        assert response.status_code == 403, username
 
 
 def test_public_user_cannot_view_audit_feedback():
@@ -314,11 +358,32 @@ def test_auditor_can_create_assignment_with_history():
         denied_auditor_delete = client.delete(f"/audit/assignments/{assignment_id}", headers=auditor_headers)
         assert denied_auditor_delete.status_code == 403
 
+        # assignment ที่มีรายงานผลตรวจ/ประวัติสถานะต้องลบได้ทั้งชุด ไม่ติด FK
+        with db_session() as con:
+            con.execute(
+                """INSERT INTO audit_reports
+                   (assignment_id, work_process, objective, findings)
+                   VALUES (?,?,?,?)""",
+                (assignment_id, "ทดสอบการลบ", "ทดสอบ FK", "รายงานชั่วคราว"),
+            )
+            con.commit()
+
         deleted = client.delete(f"/audit/assignments/{assignment_id}", headers={"X-Username": "admin"})
         assert deleted.status_code == 204
 
         missing = client.get(f"/audit/assignments/{assignment_id}", headers={"X-Username": "admin"})
         assert missing.status_code == 404
+        with db_session() as con:
+            assert con.execute(
+                "SELECT COUNT(*) FROM audit_reports WHERE assignment_id = ?", (assignment_id,)
+            ).fetchone()[0] == 0
+            assert con.execute(
+                "SELECT COUNT(*) FROM assignment_status_history WHERE assignment_id = ?", (assignment_id,)
+            ).fetchone()[0] == 0
+            assert con.execute(
+                "SELECT COUNT(*) FROM notifications WHERE ref_type = 'assignment' AND ref_id = ?",
+                (str(assignment_id),),
+            ).fetchone()[0] == 0
     finally:
         with db_session() as con:
             if feedback_id is not None:

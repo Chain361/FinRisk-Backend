@@ -34,6 +34,7 @@ router = APIRouter(prefix="/audit", tags=["audit"])
 
 # roles ที่เห็น/เขียน audit feedback ได้ (ตาม roles.md — ระดับเดียวกับ /audit/feedback เดิม)
 FEEDBACK_ROLES = ("admin", "regional_supervisor", "local_executive", "project_auditor", "risk_analyst")
+ASSIGNMENT_READ_ROLES = ("admin", "regional_supervisor", "local_executive", "project_auditor", "risk_analyst")
 # roles ที่ปิดเรื่อง (resolve) ได้ — ผู้ตรวจสอบ/แอดมินเท่านั้น ตรงกับ canResolveFeedback ฝั่ง frontend
 RESOLVE_ROLES = ("admin", "project_auditor")
 REPORT_EXPORT_ROLES = ("admin", "regional_supervisor", "local_executive", "project_auditor", "risk_analyst")
@@ -264,6 +265,13 @@ def _project_in_scope(conn: Connection, project_id: str, user: dict) -> SqliteLi
     scope = scope_subdistrict_ids(conn, user)
     if scope is not None and project["subdistrict_id"] not in scope:
         raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์เข้าถึงโครงการนอกพื้นที่ของคุณ")
+    if user["role"] == "risk_analyst":
+        assignment = conn.execute(
+            "SELECT 1 FROM assignments WHERE project_id = ? AND assigned_to = ? LIMIT 1",
+            (project_id, user["user_id"]),
+        ).fetchone()
+        if assignment is None:
+            raise HTTPException(status_code=403, detail="เห็นได้เฉพาะงานที่ได้รับมอบหมาย")
     return project
 
 
@@ -389,7 +397,7 @@ def assignment_assignees(
 
 @router.get("/assignments/my")
 def my_assignments(
-    user: dict = Depends(require_roles("admin", "regional_supervisor", "project_auditor", "risk_analyst")),
+    user: dict = Depends(require_roles(*ASSIGNMENT_READ_ROLES)),
     conn: Connection = Depends(get_db),
 ):
     """Return work visible to the current user; analysts only receive their own work."""
@@ -398,7 +406,7 @@ def my_assignments(
 
 @router.get("/assignments")
 def list_assignments(
-    user: dict = Depends(require_roles("admin", "regional_supervisor", "project_auditor", "risk_analyst")),
+    user: dict = Depends(require_roles(*ASSIGNMENT_READ_ROLES)),
     conn: Connection = Depends(get_db),
 ):
     return _visible_assignments(conn, user)
@@ -449,7 +457,7 @@ def create_assignment(
 @router.get("/assignments/{assignment_id}")
 def get_assignment(
     assignment_id: int,
-    user: dict = Depends(require_roles("admin", "regional_supervisor", "project_auditor", "risk_analyst")),
+    user: dict = Depends(require_roles(*ASSIGNMENT_READ_ROLES)),
     conn: Connection = Depends(get_db),
 ):
     _assignment_in_scope(conn, assignment_id, user)
@@ -530,7 +538,16 @@ def delete_assignment(
     conn: Connection = Depends(get_db),
 ):
     _assignment_in_scope(conn, assignment_id, user)
+    # Hard delete ต้องลบข้อมูลลูกก่อน เพราะ assignment เป็นเจ้าของ workflow ทั้งชุด
+    # (รายงานผลตรวจ, หลักฐาน, กระทู้, ประวัติสถานะ และแจ้งเตือนอ้างอิงงานนี้)
+    conn.execute("DELETE FROM audit_reports WHERE assignment_id = ?", (assignment_id,))
+    conn.execute("DELETE FROM assignment_attachments WHERE assignment_id = ?", (assignment_id,))
+    conn.execute("DELETE FROM assignment_clarifications WHERE assignment_id = ?", (assignment_id,))
     conn.execute("DELETE FROM assignment_status_history WHERE assignment_id = ?", (assignment_id,))
+    conn.execute(
+        "DELETE FROM notifications WHERE ref_type = 'assignment' AND ref_id = ?",
+        (str(assignment_id),),
+    )
     conn.execute("DELETE FROM assignments WHERE assignment_id = ?", (assignment_id,))
     conn.commit()
     return None
@@ -668,6 +685,12 @@ def list_feedback(
             return []
         where_clauses.append(f"p.subdistrict_id IN ({','.join('?' * len(allowed))})")
         params.extend(allowed)
+    if user["role"] == "risk_analyst":
+        where_clauses.append(
+            "EXISTS (SELECT 1 FROM assignments a "
+            "WHERE a.project_id = f.project_id AND a.assigned_to = ?)"
+        )
+        params.append(user["user_id"])
     where_sql = "WHERE " + " AND ".join(where_clauses)
 
     rows = conn.execute(
@@ -705,11 +728,7 @@ def create_feedback(
     user: dict = Depends(require_roles(*FEEDBACK_ROLES)),
     conn: Connection = Depends(get_db),
 ):
-    project = conn.execute(
-        "SELECT 1 FROM projects WHERE project_id = ?", (body.project_id,)
-    ).fetchone()
-    if project is None:
-        raise HTTPException(status_code=404, detail="ไม่พบโครงการ")
+    _project_in_scope(conn, body.project_id, user)
 
     now = _now_str()
     cur = conn.execute(
@@ -774,6 +793,7 @@ def update_feedback(
     ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="ไม่พบความคิดเห็น")
+    _project_in_scope(conn, row["project_id"], user)
     if row["user_id"] != user["user_id"] and user["role"] not in RESOLVE_ROLES:
         raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์แก้ไขความคิดเห็นนี้")
     if row["status"] != "draft":
@@ -833,10 +853,11 @@ def delete_feedback(
     conn: Connection = Depends(get_db),
 ):
     row = conn.execute(
-        "SELECT user_id FROM auditor_feedback WHERE feedback_id = ?", (feedback_id,)
+        "SELECT user_id, project_id FROM auditor_feedback WHERE feedback_id = ?", (feedback_id,)
     ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="ไม่พบความคิดเห็น")
+    _project_in_scope(conn, row["project_id"], user)
     if row["user_id"] != user["user_id"] and user["role"] not in RESOLVE_ROLES:
         raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์ลบความคิดเห็นนี้")
 

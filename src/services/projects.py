@@ -9,7 +9,7 @@ import sqlite3
 
 from ..database import rows_to_dicts
 from ..privacy import mask_project_for_public
-from .common import NotFoundError, ForbiddenError, latest_run_id
+from .common import NotFoundError, ForbiddenError, latest_run_id, load_project_in_scope
 
 
 def list_projects_view(
@@ -32,6 +32,15 @@ def list_projects_view(
             return []
         where.append(f"p.subdistrict_id IN ({','.join('?' * len(allowed))})")
         params += allowed
+
+    # นักวิเคราะห์เห็นได้เฉพาะโครงการที่ตนเองเคยได้รับมอบหมาย รวมงานที่ completed แล้ว
+    # ต้องบังคับที่ API เสมอ ไม่ใช่แค่ filter บน UI.
+    if user["role"] == "risk_analyst":
+        where.append(
+            "EXISTS (SELECT 1 FROM assignments a "
+            "WHERE a.project_id = p.project_id AND a.assigned_to = ?)"
+        )
+        params.append(user["user_id"])
 
     if subdistrict_id is not None:
         where.append("p.subdistrict_id = ?")
@@ -85,9 +94,8 @@ def project_summary_view(conn: sqlite3.Connection, project_id: str, user: dict) 
     if p is None:
         raise NotFoundError("ไม่พบโครงการ")
 
-    allowed = scope_subdistrict_ids(conn, user)
-    if allowed is not None and p["subdistrict_id"] not in allowed:
-        raise ForbiddenError("ไม่มีสิทธิ์เข้าถึงโครงการนอกตำบลของคุณ")
+    # ใช้ guard กลางเดียวกับ legal/documents เพื่อกัน analyst ข้ามข้อจำกัดด้วย URL ตรง.
+    load_project_in_scope(conn, project_id, user)
 
     run_id = latest_run_id(conn)
     score = conn.execute(
