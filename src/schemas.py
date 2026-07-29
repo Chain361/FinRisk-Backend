@@ -134,7 +134,7 @@ class AssignmentCreate(BaseModel):
     project_id: str
     assignee_id: int
     priority: AssignmentPriority = "normal"
-    note: str = Field(min_length=1, max_length=5000)
+    note: str = Field(max_length=5000)
     due_date: str | None = None
     work_process: str = Field(default="", max_length=5000)
     work_objective: str = Field(default="", max_length=5000)
