@@ -19,11 +19,21 @@ def list_projects(
     budget_year: int | None = Query(default=None),
     subdistrict_id: int | None = Query(default=None),
     risk_level: str | None = Query(default=None, pattern="^(low|medium|high)$"),
+    project_name: str | None = Query(
+        default=None,
+        max_length=200,
+        description="ค้นชื่อโครงการด้วยคำสำคัญ (คั่นด้วยช่องว่างได้หลายคำ ทุกคำต้องเจอ ไม่สนลำดับ/ตัวพิมพ์เล็กใหญ่)",
+    ),
     user: dict = Depends(get_current_user),
     conn: Connection = Depends(get_db),
 ):
     return projects_service.list_projects_view(
-        conn, user, budget_year=budget_year, subdistrict_id=subdistrict_id, risk_level=risk_level
+        conn,
+        user,
+        budget_year=budget_year,
+        subdistrict_id=subdistrict_id,
+        risk_level=risk_level,
+        project_name=project_name,
     )
 
 

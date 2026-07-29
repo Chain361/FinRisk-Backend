@@ -50,6 +50,39 @@ def test_admin_sees_all():
     assert summary["total"] > 0
 
 
+def test_projects_search_by_name_partial_case_insensitive():
+    """ค้นโครงการด้วยชื่อ (บางส่วน/ไม่สนตัวพิมพ์) — ใช้เมื่อผู้ใช้ไม่รู้ project_id (เช่น จาก chatbot)"""
+    admin = {"X-Username": "admin"}
+    all_projects = client.get("/projects", headers=admin).json()
+    assert all_projects
+
+    target = all_projects[0]
+    needle = target["project_name"][:6]
+    result = client.get("/projects", headers=admin, params={"project_name": needle.upper()})
+    assert result.status_code == 200
+    names = [p["project_name"] for p in result.json()]
+    assert names  # ต้องเจออย่างน้อย 1 รายการ แม้ query เป็นตัวพิมพ์ใหญ่ต่างจากต้นฉบับ
+    assert any(p["project_id"] == target["project_id"] for p in result.json())
+    assert all(needle.lower() in n.lower() for n in names)
+
+    no_match = client.get("/projects", headers=admin, params={"project_name": "ไม่มีโครงการนี้แน่นอน-xyz"})
+    assert no_match.status_code == 200
+    assert no_match.json() == []
+
+
+def test_projects_search_by_name_matches_all_keywords_any_order():
+    """ชื่อโครงการจริงเป็นประโยคยาวมีคำแทรก (เช่น 'ภายใน หมู่ที่ 9') — ค้นด้วยคำสำคัญหลายคำ (คั่นด้วย
+    เว้นวรรค) ต้องแมตช์ทุกคำโดยไม่สนลำดับ/ระยะห่างในชื่อจริง ไม่ใช่ต้องเป็นวลีต่อเนื่องเป๊ะๆ"""
+    admin = {"X-Username": "admin"}
+    result = client.get(
+        "/projects", headers=admin, params={"project_name": "ถนนดินลูกรัง บ้านป่ายาง"}
+    )
+    assert result.status_code == 200
+    names = [p["project_name"] for p in result.json()]
+    assert names
+    assert all("ถนนดินลูกรัง" in n and "บ้านป่ายาง" in n for n in names)
+
+
 def test_risk_summary_uses_project_filters_without_bypassing_scope():
     """summary ต้องนับชุดเดียวกับ /projects และ filter ตำบลต้องไม่ข้าม scope."""
     admin = {"X-Username": "admin"}

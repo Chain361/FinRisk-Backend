@@ -18,6 +18,7 @@ def list_projects_view(
     budget_year: int | None = None,
     subdistrict_id: int | None = None,
     risk_level: str | None = None,
+    project_name: str | None = None,
 ) -> list[dict]:
     # import ในฟังก์ชันเพื่อเลี่ยง circular import (auth → database → services)
     from ..auth import scope_subdistrict_ids
@@ -41,6 +42,12 @@ def list_projects_view(
     if risk_level is not None:
         where.append("s.risk_level = ?")
         params.append(risk_level)
+    if project_name:
+        # ค้นแบบ "ทุกคำต้องเจอ" (ไม่สนลำดับ/ตัวพิมพ์) แทนที่จะจับคู่ทั้งวลีตรงๆ เพราะชื่อโครงการจริง
+        # เป็นประโยคยาวมีคำแทรก (เช่น "ภายใน หมู่ที่ 9") — ถ้าจับคู่ทั้งวลีจะพลาดง่ายเกินไป
+        for term in project_name.split():
+            where.append("p.project_name ILIKE ?")
+            params.append(f"%{term}%")
 
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
     sql = f"""

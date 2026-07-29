@@ -165,6 +165,23 @@ def test_chatbot_attachment_rejects_oversized_file(monkeypatch):
     assert r.status_code == 413
 
 
+def test_chatbot_list_projects_tool_searches_by_name():
+    """ถามด้วยชื่อโครงการ (ไม่มี project_id) — LLM เรียก list_projects พร้อม project_name ได้"""
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT user_id, username, display_name, role, subdistrict_id FROM users WHERE username = ?",
+            ("auditor1",),
+        ).fetchone()
+        auditor1 = dict(row)
+        result = chatbot_service._execute_tool(
+            conn, auditor1, "list_projects", {"project_name": "ถนน"}
+        )
+        assert "error" not in result
+        projects = result["result"]
+        assert projects
+        assert all("ถนน" in p["project_name"] for p in projects)
+
+
 def test_execute_tool_scope_guard_blocks_cross_subdistrict_access():
     """หัวใจของ guardrail: ต่อให้ LLM ขอ project_id นอกตำบล tool ต้องคืน error ไม่ใช่ข้อมูลจริง"""
     with db_session() as conn:
