@@ -5,6 +5,7 @@ import re
 import zipfile
 
 from fastapi.testclient import TestClient
+from pypdf import PdfReader
 
 from src.database import _connect
 from src.main import app
@@ -112,6 +113,9 @@ def test_audit_report_export_formats_and_scope():
             rf"attachment; filename=finrisk_audit_report_[a-z0-9_-]+_thachang_{report_id}\.pdf$",
             pdf.headers["content-disposition"],
         )
+        pdf_text = PdfReader(io.BytesIO(pdf.content)).pages[0].extract_text()
+        assert "การประเมินความเสี่ยงเบื้องต้นเกี่ยวกับกิจกรรมการตรวจสอบ" in pdf_text
+        assert "ผู้ประเมินความเสี่ยง" in pdf_text
 
         xlsx = client.get(f"/audit/reports/{report_id}/export?format=xlsx", headers={"X-Username": "auditor1"})
         assert xlsx.status_code == 200

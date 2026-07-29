@@ -12,7 +12,12 @@ from ..database import Connection, SqliteLikeRow, get_db, rows_to_dicts
 from ..log_retention import list_archived_access_logs
 from ..notify import create_notification
 from ..services.common import ForbiddenError, NotFoundError
-from ..services.reporting import audit_report_data, audit_report_filename, build_audit_report_pdf, build_audit_report_xlsx
+from ..services.reporting import (
+    audit_report_data,
+    audit_report_filename,
+    build_audit_report_xlsx,
+    build_audit_risk_assessment_pdf,
+)
 from ..schemas import (
     AssignmentCreate,
     AssignmentStatusUpdate,
@@ -167,7 +172,7 @@ def export_audit_report(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     if format == "pdf":
-        content = build_audit_report_pdf(data)
+        content = build_audit_risk_assessment_pdf(data)
         media_type = "application/pdf"
         filename = audit_report_filename(data, "pdf")
     else:

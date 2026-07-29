@@ -372,3 +372,137 @@ def build_audit_report_pdf(data: dict) -> bytes:
         ])))
     document.build(story, onFirstPage=page_decoration, onLaterPages=page_decoration)
     return output.getvalue()
+
+
+def build_audit_risk_assessment_pdf(data: dict) -> bytes:
+    """สร้างแบบฟอร์มประเมินความเสี่ยงแบบตารางตามแม่แบบรายงาน WP."""
+    font = _font_name()
+    output = io.BytesIO()
+    document = SimpleDocTemplate(
+        output,
+        pagesize=A4,
+        rightMargin=0.9 * cm,
+        leftMargin=0.9 * cm,
+        topMargin=0.85 * cm,
+        bottomMargin=0.85 * cm,
+        title=f"การประเมินความเสี่ยง {data['project_name']}",
+        author="FinRisk",
+    )
+    styles = getSampleStyleSheet()
+    title = ParagraphStyle(
+        "ThaiRiskAssessmentTitle", parent=styles["Heading1"], fontName=font,
+        fontSize=12, leading=16, alignment=TA_CENTER, spaceAfter=4,
+    )
+    body = ParagraphStyle(
+        "ThaiRiskAssessmentBody", parent=styles["BodyText"], fontName=font,
+        fontSize=7.4, leading=10.2,
+    )
+    header = ParagraphStyle(
+        "ThaiRiskAssessmentHeader", parent=body, fontSize=7.2, leading=9.4,
+        alignment=TA_CENTER,
+    )
+    activity = ParagraphStyle(
+        "ThaiRiskAssessmentActivity", parent=body, fontSize=8, leading=10.5,
+    )
+    signature = ParagraphStyle(
+        "ThaiRiskAssessmentSignature", parent=body, fontSize=7.2, leading=11,
+        alignment=TA_CENTER,
+    )
+
+    def score_level(score: int) -> str:
+        if score >= 16:
+            return "สูงมาก"
+        if score >= 10:
+            return "สูง"
+        if score >= 5:
+            return "ปานกลาง"
+        return "ต่ำ"
+
+    assessment_items = list(data.get("findings_items") or [])
+    if not assessment_items:
+        assessment_items = [{
+            "feedback_text": data.get("findings") or data.get("assignment_note") or "-",
+            "likelihood_score": data.get("likelihood"),
+            "impact_score": data.get("impact"),
+        }]
+    ranked_items = sorted(
+        assessment_items,
+        key=lambda item: (item.get("likelihood_score") or 0) * (item.get("impact_score") or 0),
+        reverse=True,
+    )
+
+    story = [
+        Paragraph("การประเมินความเสี่ยงเบื้องต้นเกี่ยวกับกิจกรรมการตรวจสอบ", title),
+        Paragraph(
+            f"<b>โครงการ/งานที่เข้าตรวจสอบ:</b> {html.escape(str(data['project_name']))}", body,
+        ),
+        Spacer(1, 0.08 * cm),
+        Paragraph(
+            f"<b>หน่วยงาน:</b> {html.escape(str(data.get('subdistrict') or '-'))}", body,
+        ),
+        Spacer(1, 0.35 * cm),
+    ]
+    table_rows = [
+        [
+            _paragraph("กระบวนงาน/\nภารกิจงาน", header),
+            _paragraph("วัตถุประสงค์\nของกระบวนงาน", header),
+            _paragraph("ความเสี่ยง\n/ปัจจัยเสี่ยง", header),
+            _paragraph("การประเมินความเสี่ยง", header), "", "", "", "",
+        ],
+        ["", "", "", _paragraph("โอกาส", header), _paragraph("ผลกระทบ", header),
+         _paragraph("ระดับ\nคะแนน", header), _paragraph("ระดับ\nความเสี่ยง", header),
+         _paragraph("ลำดับ\nความเสี่ยง", header)],
+        [_paragraph("กิจกรรม", activity), "", "", "", "", "", "", ""],
+    ]
+    for rank, item in enumerate(ranked_items, 1):
+        likelihood = item.get("likelihood_score")
+        impact = item.get("impact_score")
+        score = (likelihood or 0) * (impact or 0)
+        table_rows.append([
+            _paragraph(data.get("work_process") or "-", body),
+            _paragraph(data.get("objective") or "-", body),
+            _paragraph(item.get("feedback_text") or "-", body),
+            _paragraph(str(likelihood) if likelihood is not None else "-", header),
+            _paragraph(str(impact) if impact is not None else "-", header),
+            _paragraph(str(score) if likelihood is not None and impact is not None else "-", header),
+            _paragraph(score_level(score) if likelihood is not None and impact is not None else "-", header),
+            _paragraph(str(rank), header),
+        ])
+
+    assessment_table = Table(
+        table_rows,
+        colWidths=[3.0 * cm, 3.0 * cm, 3.3 * cm, 1.25 * cm, 1.35 * cm, 1.5 * cm, 2.0 * cm, 1.8 * cm],
+        repeatRows=3,
+    )
+    assessment_table.setStyle(TableStyle([
+        ("SPAN", (0, 0), (0, 1)), ("SPAN", (1, 0), (1, 1)), ("SPAN", (2, 0), (2, 1)),
+        ("SPAN", (3, 0), (7, 0)), ("SPAN", (0, 2), (7, 2)),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (0, 0), (-1, 2), "CENTER"),
+        ("TOPPADDING", (0, 0), (-1, 1), 4), ("BOTTOMPADDING", (0, 0), (-1, 1), 4),
+        ("TOPPADDING", (0, 2), (-1, 2), 3), ("BOTTOMPADDING", (0, 2), (-1, 2), 3),
+        ("TOPPADDING", (0, 3), (-1, -1), 7), ("BOTTOMPADDING", (0, 3), (-1, -1), 7),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3), ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    story.extend([assessment_table, Spacer(1, 0.15 * cm)])
+
+    report_date = _thai_date(data.get("submitted_at"))
+    signatures = [
+        [_paragraph("ผู้ประเมินความเสี่ยง", header), _paragraph("ผู้สอบทาน", header), _paragraph("ผู้อนุมัติ", header)],
+        [
+            _paragraph(f"................................\n({data.get('analyst_name') or '-'})\nนักวิเคราะห์ความเสี่ยง\nวันที่ {report_date}", signature),
+            _paragraph(f"................................\n({data.get('auditor_name') or '-'})\nผู้ตรวจสอบโครงการ\nวันที่ {report_date}", signature),
+            _paragraph("................................\n(................................)\nผู้อนุมัติ\nวันที่ ........................", signature),
+        ],
+    ]
+    signature_table = Table(signatures, colWidths=[6.4 * cm, 6.4 * cm, 6.4 * cm])
+    signature_table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, 0), 4), ("BOTTOMPADDING", (0, 0), (-1, 0), 4),
+        ("TOPPADDING", (0, 1), (-1, 1), 12), ("BOTTOMPADDING", (0, 1), (-1, 1), 12),
+    ]))
+    story.append(signature_table)
+    document.build(story)
+    return output.getvalue()
