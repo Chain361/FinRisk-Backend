@@ -83,6 +83,15 @@ def chatbot_target(inputs: dict) -> dict:
     section_nos: set = set()
     _collect_section_nos([r["result"] for r in records], section_nos)
 
+    # เนื้อ chunk ที่ RAG คืนมาจริง — judge ชั้น RAG triad (groundedness/context_relevance)
+    # ต้องใช้ตัวข้อความ ไม่ใช่แค่ citation metadata ที่ handle_message คืนมา
+    retrieved_context = [
+        chunk.get("text", "")
+        for r in records
+        if r["name"] == "search_document_text" and isinstance(r["result"], dict)
+        for chunk in (r["result"].get("chunks") or [])
+    ]
+
     return {
         "reply": out.get("reply", ""),
         # เติม `errored` ให้ evaluator M2 ตรวจได้ว่า tool ที่แตะโครงการนอกเขต "error จริง"
@@ -96,6 +105,7 @@ def chatbot_target(inputs: dict) -> dict:
         ],
         "citations": out.get("citations") or [],
         "available_legal_refs": sorted(section_nos),
+        "retrieved_context": retrieved_context,
     }
 
 

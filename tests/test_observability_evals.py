@@ -201,3 +201,53 @@ def test_datasets_are_valid_and_uniquely_keyed(name):
     for row in rows:
         assert "inputs" in row, f"{row['id']} ไม่มี inputs"
         assert row["inputs"].get("username"), f"{row['id']} ต้องระบุ username (ใช้ผูก scope guard)"
+
+
+# ── RAG triad (LLM-as-judge) — เทสต์เฉพาะ branch ที่ไม่ยิง Gemini ────────────────
+# ยืนยันว่า judge ไม่เรียก LLM เมื่อไม่จำเป็น (score=None/0.0) และ parser ทน output เพี้ยน
+from evals import judges as J  # noqa: E402
+
+
+def _boom(*_a, **_k):  # ถ้า branch ไหนเผลอเรียก LLM ในเคสที่ไม่ควร เทสต์ต้องพัง
+    raise AssertionError("ไม่ควรยิง Gemini ใน branch นี้")
+
+
+@pytest.mark.parametrize("judge", [J.context_relevance, J.groundedness])
+def test_rag_judges_skip_when_no_context(monkeypatch, judge):
+    """ไม่ได้ใช้ RAG (retrieved_context ว่าง) → score=None และห้ามยิง LLM"""
+    monkeypatch.setattr(J, "_call_judge", _boom)
+    result = judge(inputs={"message": "x"}, outputs={"reply": "ตอบ", "retrieved_context": []})
+    assert result["score"] is None
+
+
+def test_groundedness_ignores_whitespace_only_chunks(monkeypatch):
+    """chunk ที่มีแต่ช่องว่างไม่นับเป็นบริบท → ยังถือว่าไม่ได้ใช้ RAG"""
+    monkeypatch.setattr(J, "_call_judge", _boom)
+    result = J.groundedness(
+        inputs={"message": "x"}, outputs={"reply": "ตอบ", "retrieved_context": ["  ", ""]}
+    )
+    assert result["score"] is None
+
+
+def test_answer_relevance_empty_reply_scores_zero(monkeypatch):
+    """คำตอบว่าง = ไม่ตอบคำถาม → 0.0 โดยไม่ต้องถาม LLM"""
+    monkeypatch.setattr(J, "_call_judge", _boom)
+    result = J.answer_relevance(inputs={"message": "x"}, outputs={"reply": "   "})
+    assert result["score"] == 0.0
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ('{"score": 0.5, "reason": "ok"}', 0.5),
+        ('```json\n{"score": 1, "reason": "y"}\n```', 1.0),  # มี fence
+        ('ผลประเมิน: {"score": 85, "reason": "z"} จบ', 0.85),  # เผลอให้เป็น %
+        ('{"score": 8, "reason": "w"}', 0.8),  # เผลอให้เป็นสเกล 0–10
+        ('{"score": 2.0, "reason": "0-10"}', 0.2),  # >1 → ตีความเป็นสเกล 0–10
+        ('{"score": -0.5, "reason": "clamp"}', 0.0),  # ติดลบ → clamp เป็น 0
+        ("", 0.0),  # ว่าง
+    ],
+)
+def test_parse_verdict_normalizes_score(raw, expected):
+    """judge output ไม่นิ่ง — parser ต้องดึง JSON ออกและบีบ score ให้อยู่ใน [0,1] เสมอ"""
+    assert J._parse_verdict(raw)["score"] == pytest.approx(expected)

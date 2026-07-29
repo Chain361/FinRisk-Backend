@@ -13,6 +13,7 @@
 | 0.2 | `src/observability.py` + `wrap_gemini` + `@traceable` 4 จุด | 1 | **บังคับ** | ⬜ |
 | 0.3 | dataset + evaluator + `evals/run_chatbot_eval.py` | 2 | **บังคับ** | ⬜ |
 | 0.4 | eval ชั้น retrieval → ใช้หา `RAG_MIN_SCORE` (ปิด blocker เดิม) | 2 | **บังคับ** | ⬜ |
+| 0.4b | RAG triad LLM-judge (`context_relevance` / `groundedness` M6 / `answer_relevance`) ใน `evals/judges.py` + `--judges` | 2 | ควรทำ | ✅ (เหลือ M5/M7) |
 | 0.5 | ต่อ eval เข้า CI (`langsmith[pytest]`) | 3 | ควรทำ | ⬜ |
 | 0.6 | ย้าย `_call_gemini` → `langchain-google-genai` | 4 | **ทางเลือก** | ⬜ |
 | 0.7 | ห่อ `search_document_text` เป็น LangChain Retriever | 4 | **ทางเลือก** | ⬜ |
@@ -211,13 +212,22 @@ if os.getenv("LANGSMITH_TRACING", "").lower() == "true" and not os.getenv("LANGS
 | M3 | `tool_selection_correct` — เรียก tool ตรงตามที่คาด (เทียบ `tool_calls` ที่ response คืนมา) | **โค้ด** | 6 | ≥ 90% |
 | M4 | `citation_complete` — ถ้าใช้ `search_document_text` คำตอบต้องอ้าง doc_type_code + doc_no + page_no ที่มีจริงใน `citations` | **โค้ด** | 6 | ≥ 95% |
 | M5 | `computable_zero_wording` — factor ที่ `computable=0` ต้องตอบว่า "ข้อมูลไม่พอ" ไม่ใช่ "ไม่พบความเสี่ยง" | **LLM-as-judge** | 3 | ≥ 95% |
-| M6 | `groundedness` — ทุกข้อความในคำตอบมีที่มาจากผล tool | **LLM-as-judge** | 1 | ≥ 90% |
+| M6 | `groundedness` — ทุกข้อความในคำตอบมีที่มาจาก chunk ที่ RAG คืน (`evals/judges.py`, ✅ ทำแล้ว) | **LLM-as-judge** | 1 | ≥ 90% |
 | M7 | `empty_result_honesty` — RAG คืนว่าง ต้องบอกว่าไม่พบ ห้ามเดาจาก summary | **LLM-as-judge** | 7 | ≥ 95% |
 | M8 | `tool_turns` / `latency_p95` / `token_cost` | จาก trace อัตโนมัติ | – | เฝ้าดู |
 
 **M1 กับ M2 คือคุณค่าหลัก** — ระบบนี้ผู้ใช้คือหน่วยตรวจสอบราชการ การอ้างมาตรากฎหมายผิด
 หรือข้อมูลข้ามตำบลรั่ว เป็น failure ที่ยอมรับไม่ได้ และทั้งคู่วัดได้แบบ **deterministic**
 ไม่ต้องพึ่ง LLM judge เลย → ทำก่อน ทำง่าย ได้ผลชัด
+
+**RAG triad (`evals/judges.py`, เปิดด้วย `--judges`)** — M6 `groundedness` เป็นขาหนึ่งของ
+"RAG triad" ตามนิยาม TruLens อีกสองขาถูกเพิ่มมาคู่กันเพราะวัดจาก output ชุดเดียวกัน:
+`context_relevance` (chunk ที่ค้นเจอเกี่ยวกับคำถามไหม — ขา retrieval) และ `answer_relevance`
+(คำตอบตอบตรงคำถามไหม — ขา end-to-end) ทั้งสามเป็น **reference-free** จึงเสริม
+`retrieval_evaluators.py` ที่ต้องมี qrels และครอบคลุมคำถามที่ยังไม่ได้ label ด้วย
+**ทั้งชุดไม่ใช่ merge gate** (ผล LLM judge ไม่นิ่ง) และ `--judges` ข้ามชุด security อัตโนมัติ
+เพราะ `answer_relevance` จะให้คะแนนต่ำกับการปฏิเสธที่ถูกต้องของชุดนั้น
+ยังเหลือ M5 (`computable_zero_wording`) และ M7 (`empty_result_honesty`)
 
 ### 3.2 metrics ชั้น retrieval (แยก experiment)
 

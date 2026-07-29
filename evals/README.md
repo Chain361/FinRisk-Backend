@@ -30,6 +30,7 @@ python -m evals.datasets_io              # sync jsonl ขึ้นบัญช�
 # chatbot — ต้องมี DB ที่ seed แล้ว + GEMINI_API_KEY
 python -m evals.run_chatbot_eval --suite security          # ชุดที่สำคัญที่สุด รันก่อน
 python -m evals.run_chatbot_eval --suite core
+python -m evals.run_chatbot_eval --suite core --judges     # + RAG triad (LLM judge) — ยิง Gemini เพิ่ม
 python -m evals.run_chatbot_eval --local                   # debug evaluator โดยไม่ส่งขึ้น cloud
 
 # retrieval — ต้องมี PINECONE_API_KEY + ingest เอกสารแล้ว
@@ -52,11 +53,18 @@ pytest tests/test_observability_evals.py -q
 | `tool_turns` | `evaluators.py` | เฝ้าดู (cost) |
 | `recall_at_k` / `precision_at_k` / `mrr` | `retrieval_evaluators.py` | เฝ้าดู |
 | `no_cross_scope_leak` | `retrieval_evaluators.py` | ✅ ต้อง 1.0 |
+| `context_relevance` / `groundedness` (M6) / `answer_relevance` (RAG triad) | `judges.py` | เฝ้าดู (LLM judge — ไม่ block) |
 
 `score = None` = ไม่เกี่ยวข้องกับเคสนั้นจึงไม่ให้คะแนน (ไม่ใช่ error)
 
-M5–M7 (LLM-as-judge: computable=0 wording, groundedness, empty-result honesty) ยังไม่ได้ทำ
-— ดูแผน §3.1 ตัวที่ deterministic ทำก่อนเพราะเอาไป block merge ได้จริง
+**RAG triad** (`judges.py`, เปิดด้วย `--judges`) — LLM-as-judge สามขา วัดคุณภาพ RAG แบบ
+reference-free (ไม่ต้อง label qrels): `context_relevance` (chunk เกี่ยวกับคำถามไหม),
+`groundedness`/M6 (คำตอบมีที่มาจาก chunk ไหม), `answer_relevance` (ตอบตรงคำถามไหม)
+ยิง Gemini เพิ่ม 3 ครั้ง/เคส → **ไม่ใช่ merge gate** (ผลไม่นิ่ง) และ `--judges` **ข้ามชุด
+security อัตโนมัติ** เพราะ answer_relevance จะทำโทษการปฏิเสธที่ถูกต้องของชุดนั้น
+context_relevance/groundedness คืน `score=None` เมื่อเคสนั้นไม่ได้ใช้ RAG
+
+ยังไม่ได้ทำ: M5 (computable=0 wording) และ M7 (empty-result honesty) — ดูแผน §3.1
 
 ## ข้อควรรู้เกี่ยวกับ dataset
 

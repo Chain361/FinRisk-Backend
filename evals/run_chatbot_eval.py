@@ -12,12 +12,14 @@ run_chatbot_eval.py — รัน experiment ของ chatbot บน LangSmith
 import argparse
 import subprocess
 import sys
+from inspect import signature
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from evals.datasets_io import load_jsonl  # noqa: E402
 from evals.evaluators import DETERMINISTIC_EVALUATORS  # noqa: E402
+from evals.judges import TRIAD_EVALUATORS  # noqa: E402
 from evals.targets import chatbot_target  # noqa: E402
 
 SUITES = {
@@ -51,17 +53,34 @@ def _run_metadata() -> dict:
     }
 
 
-def run_local(suite: str) -> int:
+def _evaluators_for(suite: str, judges: bool) -> list:
+    """เลือกชุด evaluator — RAG triad (LLM judge) ต่อท้ายเมื่อ --judges เท่านั้น
+
+    ข้ามชุด security: triad โดยเฉพาะ answer_relevance จะให้คะแนนต่ำกับการ 'ปฏิเสธเพราะ
+    นอกขอบเขต' ซึ่งเป็นพฤติกรรมที่ถูกต้องของชุดนั้น — วัดแล้ว mislead (ดู judges.py)
+    """
+    if judges and suite != "security":
+        return [*DETERMINISTIC_EVALUATORS, *TRIAD_EVALUATORS]
+    return DETERMINISTIC_EVALUATORS
+
+
+def run_local(suite: str, judges: bool = False) -> int:
     """รันโดยไม่ต้องมี LangSmith — ใช้ตอน debug evaluator หรือตอนยังไม่มีคีย์"""
     file_name, _ = SUITES[suite]
     rows = load_jsonl(file_name)
+    evaluators = _evaluators_for(suite, judges)
     failures = 0
     for row in rows:
         outputs = chatbot_target(row["inputs"])
         print(f"\n── {row['id']} ── {row['inputs']['message'][:60]}")
         print(f"   reply: {outputs['reply'][:160]}")
-        for evaluator in DETERMINISTIC_EVALUATORS:
-            result = evaluator(outputs=outputs, reference_outputs=row.get("outputs") or {})
+        for evaluator in evaluators:
+            # LLM judge รับ `inputs` ด้วย, deterministic ไม่รับ — ส่งตามที่ signature ประกาศ
+            # (บน LangSmith cloud SDK ทำให้อัตโนมัติ ตรงนี้เลียนแบบให้ --local ทำงานเหมือนกัน)
+            kwargs = {"outputs": outputs, "reference_outputs": row.get("outputs") or {}}
+            if "inputs" in signature(evaluator).parameters:
+                kwargs["inputs"] = row["inputs"]
+            result = evaluator(**kwargs)
             if result["score"] is None:
                 continue
             gate = GATE.get(result["key"])
@@ -72,16 +91,17 @@ def run_local(suite: str) -> int:
     return 1 if failures else 0
 
 
-def run_langsmith(suite: str, concurrency: int) -> int:
+def run_langsmith(suite: str, concurrency: int, judges: bool = False) -> int:
     from langsmith import Client
 
     file_name, dataset_name = SUITES[suite]
+    evaluators = _evaluators_for(suite, judges)
     results = Client().evaluate(
         chatbot_target,
         data=dataset_name,
-        evaluators=DETERMINISTIC_EVALUATORS,
+        evaluators=evaluators,
         experiment_prefix=f"chatbot-{suite}",
-        metadata={**_run_metadata(), "suite": suite},
+        metadata={**_run_metadata(), "suite": suite, "judges": judges},
         max_concurrency=concurrency,
     )
     print(f"ส่งผลขึ้น LangSmith แล้ว — dataset: {dataset_name} ({file_name}.jsonl)")
@@ -96,6 +116,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--suite", choices=[*SUITES, "all"], default="all")
     parser.add_argument("--local", action="store_true", help="ไม่ส่งขึ้น LangSmith")
+    parser.add_argument(
+        "--judges",
+        action="store_true",
+        help="เพิ่ม RAG triad (LLM-as-judge: context_relevance/groundedness/answer_relevance) "
+        "— ยิง Gemini เพิ่ม 3 ครั้ง/เคส, ไม่ใช่ merge gate, ข้ามชุด security อัตโนมัติ",
+    )
     parser.add_argument("--concurrency", type=int, default=2)
     args = parser.parse_args()
 
@@ -103,7 +129,11 @@ def main() -> int:
     exit_code = 0
     for suite in suites:
         print(f"\n===== suite: {suite} =====")
-        exit_code |= run_local(suite) if args.local else run_langsmith(suite, args.concurrency)
+        exit_code |= (
+            run_local(suite, args.judges)
+            if args.local
+            else run_langsmith(suite, args.concurrency, args.judges)
+        )
     return exit_code
 
 
