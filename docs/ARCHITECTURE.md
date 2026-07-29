@@ -82,11 +82,13 @@ The HTTP interface has no `/api` prefix. Frontend calls `https://finrisk-backend
 | `GET /risk/factors` | risk factor catalog | Bearer |
 | `GET /risk/annual` | annual risk result per factor/year/subdistrict, scoped | Bearer |
 | `GET /risk/summary` | project count by risk level, scoped | Bearer |
+| `GET /risk/register/export?format=xlsx` | ทะเบียนความเสี่ยงจากรอบล่าสุด, scoped | Bearer |
 | `GET /financial-statements`, `GET /financials` | ข้อมูลงบการเงิน, scoped (alias เดียวกัน) | Bearer |
 | `POST /admin/data/upload` | นำเข้า CSV โครงการ/งบการเงินของตำบลเดิม | Bearer, admin |
 | `POST /admin/risk-engine/run` | รัน risk engine ใหม่ + แจ้งเตือน auditor เมื่อพบ high risk ใหม่ | Bearer, admin |
 | `GET/POST/PATCH/DELETE /audit/assignments*` | มอบหมายงานตรวจสอบ + state machine อนุมัติ (ดูหัวข้อถัดไป) | Bearer |
 | `GET/POST/PATCH/DELETE /audit/feedback*` | ความเห็นผู้ตรวจสอบ (CRUD + resolve) — ⚠️ scope guard ยังไม่ครบ | Bearer |
+| `GET /audit/reports/{report_id}/export?format=pdf\|xlsx` | รายงานผลตรวจ PDF/Excel, scoped | Bearer, audit roles |
 | `GET /audit/access-log` | accountability trail | Bearer, admin |
 | `GET /users`, `PUT /users/{id}` | จัดการ user/role/allowed_features | Bearer, admin |
 | `GET /notifications`, `PATCH /notifications/{id}/read`, `POST /notifications/read-all` | ระบบแจ้งเตือน | Bearer |

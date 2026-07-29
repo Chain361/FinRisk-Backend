@@ -23,3 +23,5 @@ pytest==8.*
 # (deploy OCR โดยไม่ต้องลง FastAPI) ถ้าแก้เวอร์ชันต้องแก้ทั้งสองไฟล์ให้ตรงกัน
 pdfplumber>=0.11
 rapidfuzz>=3.0
+reportlab==4.*         # สร้างรายงาน PDF ภาษาไทย
+XlsxWriter==3.*        # สร้างทะเบียนความเสี่ยง/รายงานแบบ Excel

@@ -135,6 +135,7 @@ erDiagram
     }
     audit_reports {
         int report_id PK
+        int feedback_id UK
         int assignment_id FK
         int likelihood "1-5"
         int impact "1-5"

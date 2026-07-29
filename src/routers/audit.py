@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Audit assignments, workflow history, feedback, and access-log endpoints."""
 import os
+import re
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import quote
 
@@ -10,10 +11,18 @@ from ..auth import require_roles, scope_subdistrict_ids
 from ..database import Connection, SqliteLikeRow, get_db, rows_to_dicts
 from ..log_retention import list_archived_access_logs
 from ..notify import create_notification
+from ..services.common import ForbiddenError, NotFoundError
+from ..services.reporting import (
+    audit_report_data,
+    audit_report_filename,
+    build_audit_report_xlsx,
+    build_audit_risk_assessment_pdf,
+)
 from ..schemas import (
     AssignmentCreate,
     AssignmentStatusUpdate,
     AssignmentUpdate,
+    AuditReportOut,
     AttachmentOut,
     AuditorFeedbackIn,
     AuditorFeedbackOut,
@@ -27,6 +36,7 @@ router = APIRouter(prefix="/audit", tags=["audit"])
 FEEDBACK_ROLES = ("admin", "regional_supervisor", "local_executive", "project_auditor", "risk_analyst")
 # roles ที่ปิดเรื่อง (resolve) ได้ — ผู้ตรวจสอบ/แอดมินเท่านั้น ตรงกับ canResolveFeedback ฝั่ง frontend
 RESOLVE_ROLES = ("admin", "project_auditor")
+REPORT_EXPORT_ROLES = ("admin", "regional_supervisor", "local_executive", "project_auditor", "risk_analyst")
 
 
 def _now_str() -> str:
@@ -53,6 +63,127 @@ def _fetch_feedback(conn: Connection, feedback_id: int) -> dict:
     if row is None:
         raise HTTPException(status_code=404, detail="ไม่พบความคิดเห็น")
     return _serialize_feedback(row)
+
+
+def _report_from_feedback(conn: Connection, feedback_id: int, user: dict) -> dict:
+    """Build the one-to-one audit-report draft from an approved feedback item."""
+    feedback = conn.execute(
+        """SELECT f.*, p.project_name, p.dept_name
+           FROM auditor_feedback f
+           JOIN projects p ON p.project_id = f.project_id
+           WHERE f.feedback_id = ?""",
+        (feedback_id,),
+    ).fetchone()
+    if feedback is None:
+        raise HTTPException(status_code=404, detail="ไม่พบความคิดเห็น")
+    _project_in_scope(conn, feedback["project_id"], user)
+    if feedback["status"] != "resolved":
+        raise HTTPException(status_code=422, detail="ต้องอนุมัติความคิดเห็นก่อนจึงจะบันทึกผลตรวจได้")
+
+    assignment = conn.execute(
+        """SELECT assignment_id, audit_steps
+           FROM assignments
+           WHERE project_id = ? AND assigned_by = ?
+           ORDER BY created_at DESC, assignment_id DESC
+           LIMIT 1""",
+        (feedback["project_id"], user["user_id"]),
+    ).fetchone()
+    if assignment is None:
+        raise HTTPException(status_code=422, detail="ไม่พบงานมอบหมายของผู้ตรวจสอบสำหรับโครงการนี้")
+
+    work_process, objective = _assignment_work_fields(assignment["audit_steps"])
+    risk_levels = {"low": 1, "medium": 3, "high": 5}
+    report = conn.execute(
+        "SELECT report_id, submitted_at FROM audit_reports WHERE feedback_id = ?",
+        (feedback_id,),
+    ).fetchone()
+    return {
+        "report_id": report["report_id"] if report else None,
+        "feedback_id": feedback_id,
+        "assignment_id": assignment["assignment_id"],
+        "project_id": feedback["project_id"],
+        "project_name": feedback["project_name"],
+        "dept_name": feedback["dept_name"],
+        "work_process": work_process or None,
+        "objective": objective or None,
+        "findings": feedback["feedback_text"],
+        "suggestions": feedback["suggestions"],
+        "likelihood": feedback["likelihood_score"],
+        "impact": feedback["impact_score"],
+        "impact_score": feedback["impact_score"],
+        "risk_level": risk_levels.get(feedback["concern_level"]),
+        "concern_level": feedback["concern_level"],
+        "submitted_at": report["submitted_at"] if report else None,
+    }
+
+
+@router.get("/reports/from-feedback/{feedback_id}", response_model=AuditReportOut)
+def audit_report_from_feedback(
+    feedback_id: int,
+    user: dict = Depends(require_roles("project_auditor")),
+    conn: Connection = Depends(get_db),
+):
+    """Preview an approved feedback item as the WP audit-report form."""
+    return _report_from_feedback(conn, feedback_id, user)
+
+
+@router.post("/reports/from-feedback/{feedback_id}", response_model=AuditReportOut)
+def create_audit_report_from_feedback(
+    feedback_id: int,
+    user: dict = Depends(require_roles("project_auditor")),
+    conn: Connection = Depends(get_db),
+):
+    """Persist exactly one audit report per approved feedback item."""
+    report = _report_from_feedback(conn, feedback_id, user)
+    if report["report_id"] is None:
+        row = conn.execute(
+            """INSERT INTO audit_reports
+               (feedback_id, assignment_id, work_process, objective, likelihood, impact,
+                impact_score, risk_level, findings)
+               VALUES (?,?,?,?,?,?,?,?,?)
+               RETURNING report_id, submitted_at""",
+            (
+                report["feedback_id"], report["assignment_id"], report["work_process"],
+                report["objective"], report["likelihood"], report["impact"],
+                report["impact_score"], report["risk_level"], report["findings"],
+            ),
+        ).fetchone()
+        conn.commit()
+        report["report_id"] = row["report_id"]
+        report["submitted_at"] = row["submitted_at"]
+    return report
+
+
+@router.get("/reports/{report_id}/export")
+def export_audit_report(
+    report_id: int,
+    format: str = Query("pdf"),
+    user: dict = Depends(require_roles(*REPORT_EXPORT_ROLES)),
+    conn: Connection = Depends(get_db),
+):
+    """ดาวน์โหลดรายงานผลตรวจแบบ PDF หรือ Excel โดยตรวจ scope ของโครงการก่อนเสมอ."""
+    if format not in ("pdf", "xlsx"):
+        raise HTTPException(status_code=400, detail="format ต้องเป็น pdf หรือ xlsx")
+    try:
+        data = audit_report_data(conn, report_id, user)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ForbiddenError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    if format == "pdf":
+        content = build_audit_risk_assessment_pdf(data)
+        media_type = "application/pdf"
+        filename = audit_report_filename(data, "pdf")
+    else:
+        content = build_audit_report_xlsx(data)
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        filename = audit_report_filename(data, "xlsx")
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
 
 
 ASSIGNMENT_STATUSES = {
@@ -95,6 +226,34 @@ ASSIGNMENT_SELECT = """
     JOIN users assignee ON assignee.user_id = a.assigned_to
     JOIN users assigner ON assigner.user_id = a.assigned_by
 """
+
+
+def _assignment_work_fields(audit_steps: str | None) -> tuple[str, str]:
+    """Extract the two assignment fields from the legacy single DB column."""
+    value = (audit_steps or "").strip()
+    match = re.match(
+        r"^กระบวนการงาน:\s*(.*?)\nวัตถุประสงค์ของกระบวนงาน:\s*(.*)$",
+        value,
+        flags=re.DOTALL,
+    )
+    return (match.group(1).strip(), match.group(2).strip()) if match else ("", "")
+
+
+def _format_assignment_work(work_process: str, work_objective: str, audit_steps: str | None = None) -> str:
+    """Persist the structured fields in `audit_steps` without a DB migration."""
+    process = work_process.strip()
+    objective = work_objective.strip()
+    if process or objective:
+        return f"กระบวนการงาน: {process}\nวัตถุประสงค์ของกระบวนงาน: {objective}"
+    return (audit_steps or "").strip()
+
+
+def _serialize_assignment(row: SqliteLikeRow) -> dict:
+    data = dict(row)
+    work_process, work_objective = _assignment_work_fields(data.get("audit_steps"))
+    data["work_process"] = work_process
+    data["work_objective"] = work_objective
+    return data
 
 
 def _project_in_scope(conn: Connection, project_id: str, user: dict) -> SqliteLikeRow:
@@ -190,7 +349,7 @@ def _assignment_detail(conn: Connection, assignment_id: int) -> dict:
     ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="ไม่พบงานที่มอบหมาย")
-    return dict(row)
+    return _serialize_assignment(row)
 
 
 def _visible_assignments(conn: Connection, user: dict) -> list[dict]:
@@ -199,7 +358,7 @@ def _visible_assignments(conn: Connection, user: dict) -> list[dict]:
             ASSIGNMENT_SELECT + " WHERE a.assigned_to = ? ORDER BY a.created_at DESC",
             (user["user_id"],),
         ).fetchall()
-        return rows_to_dicts(rows)
+        return [_serialize_assignment(row) for row in rows]
     scope = scope_subdistrict_ids(conn, user)
     sql = ASSIGNMENT_SELECT
     params: list = []
@@ -207,7 +366,7 @@ def _visible_assignments(conn: Connection, user: dict) -> list[dict]:
         sql += " WHERE p.subdistrict_id IN ({})".format(",".join("?" * len(scope)) or "NULL")
         params = scope
     rows = conn.execute(sql + " ORDER BY a.created_at DESC", params).fetchall()
-    return rows_to_dicts(rows)
+    return [_serialize_assignment(row) for row in rows]
 
 
 @router.get("/assignments/assignees")
@@ -271,11 +430,12 @@ def create_assignment(
         raise HTTPException(status_code=409, detail="โครงการนี้มีงานที่ยังไม่เสร็จสิ้นอยู่แล้ว")
     cursor = conn.execute(
         """INSERT INTO assignments
-           (project_id, assigned_to, assigned_by, priority, note, due_date, status)
-           VALUES (?,?,?,?,?,?, 'waiting_acceptance')
+           (project_id, assigned_to, assigned_by, priority, note, due_date, audit_steps, status)
+           VALUES (?,?,?,?,?,?,?, 'waiting_acceptance')
            RETURNING assignment_id""",
         (payload.project_id, payload.assignee_id, user["user_id"], payload.priority,
-         payload.note, payload.due_date),
+         payload.note, payload.due_date,
+         _format_assignment_work(payload.work_process, payload.work_objective, payload.audit_steps)),
     )
     assignment_id = cursor.fetchone()["assignment_id"]
     conn.execute(
@@ -327,6 +487,16 @@ def update_assignment(
     values = payload.model_dump(exclude_unset=True)
     if not values:
         return _assignment_detail(conn, assignment_id)
+    work_process = values.pop("work_process", None)
+    work_objective = values.pop("work_objective", None)
+    audit_steps = values.pop("audit_steps", None)
+    if work_process is not None or work_objective is not None or audit_steps is not None:
+        current_process, current_objective = _assignment_work_fields(assignment["audit_steps"])
+        values["audit_steps"] = _format_assignment_work(
+            current_process if work_process is None else work_process,
+            current_objective if work_objective is None else work_objective,
+            audit_steps if audit_steps is not None else assignment["audit_steps"],
+        )
     if "assignee_id" in values:
         project = _project_in_scope(conn, assignment["project_id"], user)
         _assignee_for_project(conn, values["assignee_id"], project)

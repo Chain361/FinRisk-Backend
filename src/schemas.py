@@ -116,6 +116,25 @@ class AuditorFeedbackOut(BaseModel):
     resolved_at: str | None = None
 
 
+class AuditReportOut(BaseModel):
+    report_id: int | None = None
+    feedback_id: int
+    assignment_id: int
+    project_id: str
+    project_name: str
+    dept_name: str | None = None
+    work_process: str | None = None
+    objective: str | None = None
+    findings: str
+    suggestions: str | None = None
+    likelihood: int | None = None
+    impact: int | None = None
+    impact_score: int | None = None
+    risk_level: int | None = None
+    concern_level: str | None = None
+    submitted_at: str | None = None
+
+
 AssignmentPriority = Literal["low", "normal", "high"]
 AssignmentStatus = Literal[
     "waiting_acceptance",
@@ -134,8 +153,12 @@ class AssignmentCreate(BaseModel):
     project_id: str
     assignee_id: int
     priority: AssignmentPriority = "normal"
-    note: str = Field(min_length=1, max_length=5000)
+    note: str = Field(max_length=5000)
     due_date: str | None = None
+    work_process: str = Field(default="", max_length=5000)
+    work_objective: str = Field(default="", max_length=5000)
+    # รองรับ client รุ่นก่อนที่ส่งฟิลด์รวมมาในช่วงเปลี่ยนผ่าน
+    audit_steps: str | None = Field(default=None, max_length=10000)
 
 
 class AssignmentUpdate(BaseModel):
@@ -143,6 +166,9 @@ class AssignmentUpdate(BaseModel):
     priority: AssignmentPriority | None = None
     note: str | None = Field(default=None, min_length=1, max_length=5000)
     due_date: str | None = None
+    work_process: str | None = Field(default=None, max_length=5000)
+    work_objective: str | None = Field(default=None, max_length=5000)
+    audit_steps: str | None = Field(default=None, max_length=10000)
 
 
 class AssignmentStatusUpdate(BaseModel):
