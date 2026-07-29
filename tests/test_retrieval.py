@@ -202,7 +202,7 @@ def test_chatbot_returns_citations(monkeypatch):
     monkeypatch.setattr(chatbot_service, "GEMINI_API_KEY", "dummy-key-for-test")
     monkeypatch.setattr(chatbot_service, "_call_gemini", fake_call_gemini)
 
-    r = client.post("/chatbot", json={"message": "ปร.5 ระบุอะไรบ้าง"}, headers=AUDITOR3)
+    r = client.post("/chatbot", data={"message": "ปร.5 ระบุอะไรบ้าง"}, headers=AUDITOR3)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["citations"] == [

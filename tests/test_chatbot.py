@@ -40,17 +40,17 @@ def _fake_response(parts):
 
 def test_chatbot_role_gate_forbidden():
     for headers in (LOCAL_EXEC, PUBLIC):
-        r = client.post("/chatbot", json={"message": "สวัสดี"}, headers=headers)
+        r = client.post("/chatbot", data={"message": "สวัสดี"}, headers=headers)
         assert r.status_code == 403, headers
 
 
 def test_chatbot_requires_auth():
-    assert client.post("/chatbot", json={"message": "สวัสดี"}).status_code == 401
+    assert client.post("/chatbot", data={"message": "สวัสดี"}).status_code == 401
 
 
 def test_chatbot_503_when_api_key_missing(monkeypatch):
     monkeypatch.setattr(chatbot_service, "GEMINI_API_KEY", "")
-    r = client.post("/chatbot", json={"message": "สวัสดี"}, headers=AUDITOR1)
+    r = client.post("/chatbot", data={"message": "สวัสดี"}, headers=AUDITOR1)
     assert r.status_code == 503
 
 
@@ -69,7 +69,7 @@ def test_chatbot_tool_call_round_trip(monkeypatch):
 
     monkeypatch.setattr(chatbot_service, "GEMINI_API_KEY", "dummy-key-for-test")
     monkeypatch.setattr(chatbot_service, "_call_gemini", fake_call_gemini)
-    r = client.post("/chatbot", json={"message": "โครงการ MOCK-CON-001 เสี่ยงไหม"}, headers=AUDITOR1)
+    r = client.post("/chatbot", data={"message": "โครงการ MOCK-CON-001 เสี่ยงไหม"}, headers=AUDITOR1)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["reply"] == "โครงการนี้ยังไม่พบความเสี่ยงที่ triggered ค่ะ"
@@ -84,7 +84,7 @@ def test_chatbot_gives_up_after_max_turns(monkeypatch):
 
     monkeypatch.setattr(chatbot_service, "GEMINI_API_KEY", "dummy-key-for-test")
     monkeypatch.setattr(chatbot_service, "_call_gemini", fake_call_gemini)
-    r = client.post("/chatbot", json={"message": "ทดสอบวน"}, headers=ANALYST1)
+    r = client.post("/chatbot", data={"message": "ทดสอบวน"}, headers=ANALYST1)
     assert r.status_code == 200
     body = r.json()
     assert body["reply"] == chatbot_service.FALLBACK_REPLY
@@ -101,15 +101,68 @@ def test_chatbot_rate_limit_429_then_ok_for_other_user(monkeypatch):
     monkeypatch.setattr(chatbot_service, "_call_gemini", lambda contents, config: _fake_response([_text_part("ok")]))
 
     for _ in range(2):
-        r = client.post("/chatbot", json={"message": "สวัสดี"}, headers=AUDITOR1)
+        r = client.post("/chatbot", data={"message": "สวัสดี"}, headers=AUDITOR1)
         assert r.status_code == 200, r.text
 
-    r_over = client.post("/chatbot", json={"message": "สวัสดี"}, headers=AUDITOR1)
+    r_over = client.post("/chatbot", data={"message": "สวัสดี"}, headers=AUDITOR1)
     assert r_over.status_code == 429
     assert "จำกัด" in r_over.json()["detail"]
 
-    r_other_user = client.post("/chatbot", json={"message": "สวัสดี"}, headers=ANALYST1)
+    r_other_user = client.post("/chatbot", data={"message": "สวัสดี"}, headers=ANALYST1)
     assert r_other_user.status_code == 200, r_other_user.text
+
+
+def test_chatbot_attachment_forwarded_to_gemini_as_file_part(monkeypatch):
+    """แนบไฟล์ PDF มาด้วย — ต้องถูกแปลงเป็น Part.from_bytes ต่อท้ายข้อความในเทิร์นนี้"""
+    captured = {}
+
+    def fake_call_gemini(contents, config):
+        captured["contents"] = contents
+        return _fake_response([_text_part("สรุปไฟล์ให้แล้วค่ะ")])
+
+    monkeypatch.setattr(chatbot_service, "GEMINI_API_KEY", "dummy-key-for-test")
+    monkeypatch.setattr(chatbot_service, "_call_gemini", fake_call_gemini)
+
+    r = client.post(
+        "/chatbot",
+        data={"message": "ไฟล์นี้พูดถึงอะไร"},
+        files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")},
+        headers=AUDITOR1,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["reply"] == "สรุปไฟล์ให้แล้วค่ะ"
+
+    last_turn_parts = captured["contents"][-1].parts
+    assert len(last_turn_parts) == 2
+    assert last_turn_parts[0].text == "ไฟล์นี้พูดถึงอะไร"
+    assert last_turn_parts[1].inline_data.mime_type == "application/pdf"
+    assert last_turn_parts[1].inline_data.data == b"%PDF-1.4 fake content"
+
+
+def test_chatbot_attachment_rejects_unsupported_extension(monkeypatch):
+    monkeypatch.setattr(chatbot_service, "GEMINI_API_KEY", "dummy-key-for-test")
+    r = client.post(
+        "/chatbot",
+        data={"message": "ดูไฟล์นี้ให้หน่อย"},
+        files={"file": ("evidence.docx", b"fake docx bytes", "application/vnd.openxmlformats")},
+        headers=AUDITOR1,
+    )
+    assert r.status_code == 422
+    assert "นามสกุล" in r.json()["detail"]
+
+
+def test_chatbot_attachment_rejects_oversized_file(monkeypatch):
+    from src.routers import chatbot as chatbot_router
+
+    monkeypatch.setattr(chatbot_service, "GEMINI_API_KEY", "dummy-key-for-test")
+    monkeypatch.setattr(chatbot_router, "MAX_ATTACHMENT_SIZE", 10)
+    r = client.post(
+        "/chatbot",
+        data={"message": "ดูไฟล์นี้ให้หน่อย"},
+        files={"file": ("small.png", b"0" * 100, "image/png")},
+        headers=AUDITOR1,
+    )
+    assert r.status_code == 413
 
 
 def test_execute_tool_scope_guard_blocks_cross_subdistrict_access():

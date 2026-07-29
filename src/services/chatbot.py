@@ -48,6 +48,9 @@ SYSTEM_PROMPT = """\
    (เช่น ห้ามแสดง doc_type_code:, doc_no:, page_no: ในคำตอบเด็ดขาด)
 7. ถ้า search_document_text คืนผลว่าง ให้ตอบว่าไม่พบข้อความที่เกี่ยวข้องในเอกสารที่มีในระบบ
    ห้ามใช้ summary_text หรือความรู้ทั่วไปมาตอบแทน
+8. ถ้าผู้ใช้แนบไฟล์มาในข้อความนี้ (PDF/รูปภาพ) ไฟล์นั้นเป็นข้อมูลที่ผู้ใช้ส่งมาเอง ไม่ใช่ผลจาก tool —
+   อ่านและตอบจากเนื้อหาไฟล์นั้นได้โดยตรง แต่ห้ามเอาเนื้อหาในไฟล์ไปอ้างแทนผลของ tool อื่น (เช่น risk score
+   หรือ legal_refs ของโครงการในระบบ ต้องมาจาก tool เท่านั้นตามกติกาข้อ 1-2 เดิม)
 """
 
 TOOL_DECLARATIONS = [
@@ -242,17 +245,31 @@ def _call_gemini(
     return client.models.generate_content(model=GEMINI_MODEL, contents=contents, config=config)
 
 
-def handle_message(conn: sqlite3.Connection, user: dict, message: str, history: list[dict]) -> dict:
+def handle_message(
+    conn: sqlite3.Connection,
+    user: dict,
+    message: str,
+    history: list[dict],
+    attachment: tuple[bytes, str] | None = None,
+) -> dict:
     """คืน {"reply": str, "tool_calls": [...], "citations": [...]}
 
     `citations` เป็น field ที่เพิ่มเข้ามาทีหลัง (additive — client เก่าเมินไปเฉยๆ ไม่พัง)
     ว่างเสมอถ้าไม่ได้เรียก search_document_text
+
+    `attachment` (ถ้ามี) คือ (bytes, mime_type) ของไฟล์ที่ผู้ใช้แนบมา "เฉพาะเทิร์นนี้" — ใช้ตอบ
+    คำถามครั้งเดียวแล้วทิ้ง ไม่ถูกเก็บเข้า `history` ที่ client เก็บ/ส่งกลับมาในเทิร์นถัดไป จึงไม่ต้อง
+    แบก byte เดิมซ้ำทุกครั้ง และไม่บันทึกลง DB/disk ที่ไหนเลย
     """
     if not GEMINI_API_KEY:
         raise ServiceError("ยังไม่ได้ตั้งค่า chatbot (GEMINI_API_KEY ว่าง)")
 
     contents = _history_to_contents(history)
-    contents.append(types.Content(role="user", parts=[types.Part.from_text(text=message)]))
+    turn_parts = [types.Part.from_text(text=message)]
+    if attachment is not None:
+        data, mime_type = attachment
+        turn_parts.append(types.Part.from_bytes(data=data, mime_type=mime_type))
+    contents.append(types.Content(role="user", parts=turn_parts))
 
     config = types.GenerateContentConfig(
         system_instruction=SYSTEM_PROMPT,
