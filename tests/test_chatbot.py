@@ -2,13 +2,14 @@
 """
 เทสต์ chatbot orchestration (src/services/chatbot.py, src/routers/chatbot.py)
 
-ไม่ยิง Gemini API จริง — monkeypatch chatbot_service._call_gemini เสมอ
+ไม่ยิง Qwen API จริง — monkeypatch chatbot_service._call_qwen เสมอ
 ยืนยัน 3 เรื่องหลัก:
   1. role gate: เฉพาะ admin/project_auditor/risk_analyst เรียกได้
-  2. 503 เมื่อยังไม่ได้ตั้ง GEMINI_API_KEY
+  2. 503 เมื่อยังไม่ได้ตั้ง QWEN_API_KEY
   3. scope guard เป็น deterministic — tool ที่ขอโครงการนอกตำบลต้องได้ error ไม่ใช่ข้อมูลจริง
      (แม้ LLM จะ "ขอ" project_id นอกเขตมาก็ตาม)
 """
+import base64
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -26,16 +27,16 @@ PUBLIC = {"X-Username": "public1"}
 MOCK_OTHER_SUBDISTRICT = "MOCK-CON-002"  # อยู่ตำบลโยนก — นอกเขตของ auditor1/analyst1
 
 
-def _function_call_part(name: str, args: dict):
-    return SimpleNamespace(function_call=SimpleNamespace(name=name, args=args), text=None)
+def _tool_use_block(name: str, args: dict, block_id: str = "toolu_1"):
+    return SimpleNamespace(type="tool_use", id=block_id, name=name, input=args)
 
 
-def _text_part(text: str):
-    return SimpleNamespace(function_call=None, text=text)
+def _text_block(text: str):
+    return SimpleNamespace(type="text", text=text)
 
 
-def _fake_response(parts):
-    return SimpleNamespace(candidates=[SimpleNamespace(content=SimpleNamespace(parts=parts))])
+def _fake_response(blocks):
+    return SimpleNamespace(content=blocks)
 
 
 def test_chatbot_role_gate_forbidden():
@@ -49,26 +50,26 @@ def test_chatbot_requires_auth():
 
 
 def test_chatbot_503_when_api_key_missing(monkeypatch):
-    monkeypatch.setattr(chatbot_service, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(chatbot_service, "QWEN_API_KEY", "")
     r = client.post("/chatbot", data={"message": "สวัสดี"}, headers=AUDITOR1)
     assert r.status_code == 503
 
 
 def test_chatbot_tool_call_round_trip(monkeypatch):
-    """1 รอบ function-call (get_project) แล้วตอบข้อความสุดท้าย — ยืนยัน orchestration ทำงานครบลูป"""
+    """1 รอบ tool_use (get_project) แล้วตอบข้อความสุดท้าย — ยืนยัน orchestration ทำงานครบลูป"""
     responses = [
-        _fake_response([_function_call_part("get_project", {"project_id": "MOCK-CON-001"})]),
-        _fake_response([_text_part("โครงการนี้ยังไม่พบความเสี่ยงที่ triggered ค่ะ")]),
+        _fake_response([_tool_use_block("get_project", {"project_id": "MOCK-CON-001"})]),
+        _fake_response([_text_block("โครงการนี้ยังไม่พบความเสี่ยงที่ triggered ค่ะ")]),
     ]
     calls = {"n": 0}
 
-    def fake_call_gemini(contents, config):
+    def fake_call_qwen(messages, tools):
         r = responses[calls["n"]]
         calls["n"] += 1
         return r
 
-    monkeypatch.setattr(chatbot_service, "GEMINI_API_KEY", "dummy-key-for-test")
-    monkeypatch.setattr(chatbot_service, "_call_gemini", fake_call_gemini)
+    monkeypatch.setattr(chatbot_service, "QWEN_API_KEY", "dummy-key-for-test")
+    monkeypatch.setattr(chatbot_service, "_call_qwen", fake_call_qwen)
     r = client.post("/chatbot", data={"message": "โครงการ MOCK-CON-001 เสี่ยงไหม"}, headers=AUDITOR1)
     assert r.status_code == 200, r.text
     body = r.json()
@@ -79,11 +80,11 @@ def test_chatbot_tool_call_round_trip(monkeypatch):
 def test_chatbot_gives_up_after_max_turns(monkeypatch):
     """LLM ที่วน tool-call ไม่เลิก → ต้อง fallback ไม่ loop ไม่รู้จบ (กัน runaway cost)"""
 
-    def fake_call_gemini(contents, config):
-        return _fake_response([_function_call_part("list_laws", {})])
+    def fake_call_qwen(messages, tools):
+        return _fake_response([_tool_use_block("list_laws", {})])
 
-    monkeypatch.setattr(chatbot_service, "GEMINI_API_KEY", "dummy-key-for-test")
-    monkeypatch.setattr(chatbot_service, "_call_gemini", fake_call_gemini)
+    monkeypatch.setattr(chatbot_service, "QWEN_API_KEY", "dummy-key-for-test")
+    monkeypatch.setattr(chatbot_service, "_call_qwen", fake_call_qwen)
     r = client.post("/chatbot", data={"message": "ทดสอบวน"}, headers=ANALYST1)
     assert r.status_code == 200
     body = r.json()
@@ -97,8 +98,8 @@ def test_chatbot_rate_limit_429_then_ok_for_other_user(monkeypatch):
     from src.routers import chatbot as chatbot_router
 
     monkeypatch.setattr(chatbot_router, "_rate_limiter", SlidingWindowRateLimiter(max_requests=2, window_seconds=60))
-    monkeypatch.setattr(chatbot_service, "GEMINI_API_KEY", "dummy-key-for-test")
-    monkeypatch.setattr(chatbot_service, "_call_gemini", lambda contents, config: _fake_response([_text_part("ok")]))
+    monkeypatch.setattr(chatbot_service, "QWEN_API_KEY", "dummy-key-for-test")
+    monkeypatch.setattr(chatbot_service, "_call_qwen", lambda messages, tools: _fake_response([_text_block("ok")]))
 
     for _ in range(2):
         r = client.post("/chatbot", data={"message": "สวัสดี"}, headers=AUDITOR1)
@@ -112,35 +113,38 @@ def test_chatbot_rate_limit_429_then_ok_for_other_user(monkeypatch):
     assert r_other_user.status_code == 200, r_other_user.text
 
 
-def test_chatbot_attachment_forwarded_to_gemini_as_file_part(monkeypatch):
-    """แนบไฟล์ PDF มาด้วย — ต้องถูกแปลงเป็น Part.from_bytes ต่อท้ายข้อความในเทิร์นนี้"""
+def test_chatbot_attachment_forwarded_to_qwen_as_document_block(monkeypatch):
+    """แนบไฟล์ PDF มาด้วย — ต้องถูกแปลงเป็น content block ("document", base64) ต่อท้ายข้อความในเทิร์นนี้"""
     captured = {}
+    file_bytes = b"%PDF-1.4 fake content"
 
-    def fake_call_gemini(contents, config):
-        captured["contents"] = contents
-        return _fake_response([_text_part("สรุปไฟล์ให้แล้วค่ะ")])
+    def fake_call_qwen(messages, tools):
+        captured["messages"] = messages
+        return _fake_response([_text_block("สรุปไฟล์ให้แล้วค่ะ")])
 
-    monkeypatch.setattr(chatbot_service, "GEMINI_API_KEY", "dummy-key-for-test")
-    monkeypatch.setattr(chatbot_service, "_call_gemini", fake_call_gemini)
+    monkeypatch.setattr(chatbot_service, "QWEN_API_KEY", "dummy-key-for-test")
+    monkeypatch.setattr(chatbot_service, "_call_qwen", fake_call_qwen)
 
     r = client.post(
         "/chatbot",
         data={"message": "ไฟล์นี้พูดถึงอะไร"},
-        files={"file": ("doc.pdf", b"%PDF-1.4 fake content", "application/pdf")},
+        files={"file": ("doc.pdf", file_bytes, "application/pdf")},
         headers=AUDITOR1,
     )
     assert r.status_code == 200, r.text
     assert r.json()["reply"] == "สรุปไฟล์ให้แล้วค่ะ"
 
-    last_turn_parts = captured["contents"][-1].parts
-    assert len(last_turn_parts) == 2
-    assert last_turn_parts[0].text == "ไฟล์นี้พูดถึงอะไร"
-    assert last_turn_parts[1].inline_data.mime_type == "application/pdf"
-    assert last_turn_parts[1].inline_data.data == b"%PDF-1.4 fake content"
+    last_turn_content = captured["messages"][-1]["content"]
+    assert len(last_turn_content) == 2
+    assert last_turn_content[0] == {"type": "text", "text": "ไฟล์นี้พูดถึงอะไร"}
+    doc_block = last_turn_content[1]
+    assert doc_block["type"] == "document"
+    assert doc_block["source"]["media_type"] == "application/pdf"
+    assert base64.b64decode(doc_block["source"]["data"]) == file_bytes
 
 
 def test_chatbot_attachment_rejects_unsupported_extension(monkeypatch):
-    monkeypatch.setattr(chatbot_service, "GEMINI_API_KEY", "dummy-key-for-test")
+    monkeypatch.setattr(chatbot_service, "QWEN_API_KEY", "dummy-key-for-test")
     r = client.post(
         "/chatbot",
         data={"message": "ดูไฟล์นี้ให้หน่อย"},
@@ -154,7 +158,7 @@ def test_chatbot_attachment_rejects_unsupported_extension(monkeypatch):
 def test_chatbot_attachment_rejects_oversized_file(monkeypatch):
     from src.routers import chatbot as chatbot_router
 
-    monkeypatch.setattr(chatbot_service, "GEMINI_API_KEY", "dummy-key-for-test")
+    monkeypatch.setattr(chatbot_service, "QWEN_API_KEY", "dummy-key-for-test")
     monkeypatch.setattr(chatbot_router, "MAX_ATTACHMENT_SIZE", 10)
     r = client.post(
         "/chatbot",

@@ -198,7 +198,7 @@ data_modelling/
 │  │  ├─ documents.py           # ชั้นเอกสาร (doc types/status/missing/findings)
 │  │  ├─ users.py               # get_users / update_user (user-management)
 │  │  ├─ retrieval.py           # ค้นเนื้อหาเอกสารเต็มบน Pinecone + post-verify กับ Postgres (ดู §2.2)
-│  │  └─ chatbot.py             # orchestration Gemini function-calling (tool 6 ตัว — ดู docs/chatbot_architecture.md)
+│  │  └─ chatbot.py             # orchestration Qwen (Anthropic-compatible) function-calling (tool 6 ตัว — ดู docs/chatbot_architecture.md)
 │  └─ routers/                  # endpoint แยกตามโดเมน
 │     ├─ auth.py                # /auth/login, /auth/me
 │     ├─ subdistricts.py        # /subdistricts
@@ -212,7 +212,7 @@ data_modelling/
 │     ├─ public.py              # /public/projects/export — open data (CSV/JSON)
 │     ├─ legal.py               # /legal/laws, /risk/projects/{id}/legal
 │     ├─ documents.py           # /documents/types, /projects/{id}/documents(/search)
-│     └─ chatbot.py             # /chatbot — Gemini function-calling (admin/project_auditor/risk_analyst)
+│     └─ chatbot.py             # /chatbot — Qwen function-calling (admin/project_auditor/risk_analyst)
 ├─ tests/
 │  ├─ test_smoke.py             # smoke test (pytest)
 │  ├─ test_legal_documents.py   # เทสต์ชั้นกฎหมาย + ชั้นเอกสาร
@@ -368,10 +368,11 @@ curl -X PATCH http://127.0.0.1:8000/audit/assignments/1/status \
 curl "http://127.0.0.1:8000/public/projects/export?format=csv" -H "Authorization: Bearer $TOKEN"
 
 # chatbot — admin/project_auditor/risk_analyst เท่านั้น รายละเอียด orchestration/guardrail ดู
-# docs/chatbot_architecture.md (ต้องตั้ง env var GEMINI_API_KEY ก่อน ไม่งั้นได้ 503)
+# docs/chatbot_architecture.md (ต้องตั้ง env var QWEN_API_KEY ก่อน ไม่งั้นได้ 503)
+# multipart form (ไม่ใช่ JSON body — รองรับไฟล์แนบ PDF/รูปภาพต่อเทิร์นด้วย)
 curl -X POST http://127.0.0.1:8000/chatbot \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"message":"โครงการ MOCK-CON-002 ขาดเอกสารอะไรบ้าง","history":[]}'
+  -H "Authorization: Bearer $TOKEN" \
+  -F "message=โครงการ MOCK-CON-002 ขาดเอกสารอะไรบ้าง" -F "history=[]"
 ```
 
 ---

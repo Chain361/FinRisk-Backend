@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""/chatbot — ผู้ช่วยตอบคำถาม (Gemini function-calling) สำหรับ project_auditor/risk_analyst
+"""/chatbot — ผู้ช่วยตอบคำถาม (Qwen function-calling ผ่าน Anthropic-compatible API) สำหรับ
+project_auditor/risk_analyst
 
 router บาง: orchestration + tool dispatch อยู่ใน src/services/chatbot.py ทั้งหมด
 
@@ -29,8 +30,9 @@ _rate_limiter = SlidingWindowRateLimiter(CHATBOT_RATE_LIMIT_PER_MINUTE, window_s
 # ChatMessageRequest.history ก่อนย้าย endpoint นี้มาเป็น multipart form เพื่อรับไฟล์แนบด้วย)
 _history_adapter = TypeAdapter(Annotated[list[ChatTurn], Field(max_length=40)])
 
-# ไฟล์แนบในแชท: จำกัดเฉพาะชนิดที่ Gemini อ่านเป็น inline data ได้ตรงๆ (ไม่ใช่ allowlist เดียวกับ
-# routers/audit.py ที่รับ .docx/.xlsx ด้วย เพราะที่นั่นแค่เก็บไฟล์ ไม่ได้ส่งให้ LLM อ่าน)
+# ไฟล์แนบในแชท: จำกัดเฉพาะชนิดที่ Qwen (ผ่าน Anthropic-compatible content block) อ่านได้ตรงๆ
+# (ไม่ใช่ allowlist เดียวกับ routers/audit.py ที่รับ .docx/.xlsx ด้วย เพราะที่นั่นแค่เก็บไฟล์
+# ไม่ได้ส่งให้ LLM อ่าน)
 ATTACHMENT_MIME_BY_EXT = {
     ".pdf": "application/pdf",
     ".jpg": "image/jpeg",

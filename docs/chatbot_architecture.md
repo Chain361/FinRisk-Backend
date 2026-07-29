@@ -5,14 +5,18 @@
 
 ## โมเดล
 
-**Gemini 2.5 Flash** ผ่าน Google AI Studio API key — SDK คือ `google-genai`
+**Qwen** (`qwen3.8-max-preview`) ผ่าน Alibaba Cloud MaaS API key — เชื่อมด้วย Anthropic-compatible
+API, SDK คือ `anthropic` (ชี้ `base_url` ไปที่ endpoint ของ Alibaba แทน `api.anthropic.com`)
 
 ตั้งค่าที่ `src/config.py`:
 ```python
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")   # ไม่มี default ที่ใช้งานได้จริง
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+QWEN_API_KEY = os.getenv("QWEN_API_KEY", "")   # ไม่มี default ที่ใช้งานได้จริง
+QWEN_BASE_URL = os.getenv("QWEN_BASE_URL", "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic")
+QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen3.8-max-preview")
+QWEN_MAX_TOKENS = int(os.getenv("QWEN_MAX_TOKENS", "12000"))
+QWEN_THINKING_BUDGET_TOKENS = int(os.getenv("QWEN_THINKING_BUDGET_TOKENS", "8000"))
 ```
-เปลี่ยนรุ่นโมเดลได้ผ่าน env var `GEMINI_MODEL` โดยไม่ต้องแก้โค้ด — ถ้า `GEMINI_API_KEY` ว่าง `POST /chatbot` ตอบ 503 ทันที (ไม่พยายามเรียก API)
+เปลี่ยนรุ่นโมเดลได้ผ่าน env var `QWEN_MODEL` โดยไม่ต้องแก้โค้ด — ถ้า `QWEN_API_KEY` ว่าง `POST /chatbot` ตอบ 503 ทันที (ไม่พยายามเรียก API) — `QWEN_MAX_TOKENS` ต้องมากกว่า `QWEN_THINKING_BUDGET_TOKENS` เสมอ (Anthropic API ต้องเหลือ token ให้คำตอบจริงหลังหัก thinking budget)
 
 ## ขอบเขตที่ใช้ / ไม่ใช้ RAG
 

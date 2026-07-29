@@ -39,10 +39,10 @@ DISABLED_MSG = "ยังไม่ได้เปิดใช้การค้�
 
 
 def rag_enabled() -> bool:
-    """feature flag — คีย์ว่าง = ไม่ประกาศ tool ให้ Gemini และ endpoint search ตอบ 503
+    """feature flag — คีย์ว่าง = ไม่ประกาศ tool ให้ Qwen และ endpoint search ตอบ 503
 
     อ่านค่า global ตอนเรียก (ไม่ใช่ตอน import) เพื่อให้ monkeypatch ในเทสต์ได้ — pattern เดียวกับ
-    `chatbot.GEMINI_API_KEY`
+    `chatbot.QWEN_API_KEY`
     """
     return bool(PINECONE_API_KEY)
 

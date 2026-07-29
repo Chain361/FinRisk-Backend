@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-chatbot.py (service) — chatbot orchestration (Gemini function-calling)
+chatbot.py (service) — chatbot orchestration (Qwen function-calling ผ่าน Anthropic-compatible API)
 
 ตอบคำถามของ project_auditor/risk_analyst โดยเรียก service function เดิม
 (projects/legal/documents + retrieval) เป็น "tool" — ไม่เขียน SQL เอง และไม่ให้ LLM กำหนด scope เอง
@@ -9,13 +9,20 @@ chatbot.py (service) — chatbot orchestration (Gemini function-calling)
 ที่ service ชั้นล่างบังคับอยู่แล้ว — scope guard จึง deterministic ไม่พึ่ง prompt guardrail
 (ดู docs/legal_linkage_plan.md §5.1 "agent ไม่เขียน SQL เอง เพราะ access control ต้อง deterministic")
 """
+import base64
+import json
 import logging
 import sqlite3
 
-from google import genai
-from google.genai import errors, types
+from anthropic import Anthropic, APIError
 
-from ..config import GEMINI_API_KEY, GEMINI_MODEL
+from ..config import (
+    QWEN_API_KEY,
+    QWEN_BASE_URL,
+    QWEN_MAX_TOKENS,
+    QWEN_MODEL,
+    QWEN_THINKING_BUDGET_TOKENS,
+)
 from . import documents as documents_service
 from . import legal as legal_service
 from . import projects as projects_service
@@ -60,9 +67,9 @@ SYSTEM_PROMPT = """\
 """
 
 TOOL_DECLARATIONS = [
-    types.FunctionDeclaration(
-        name="list_projects",
-        description=(
+    {
+        "name": "list_projects",
+        "description": (
             "แสดงรายการโครงการที่ user มีสิทธิ์เห็น กรองตามตำบล/ระดับความเสี่ยง/ชื่อโครงการได้ "
             "ใช้เมื่อต้องค้นหาโครงการโดยยังไม่รู้ project_id — ถ้าผู้ใช้ถามถึงโครงการด้วย 'ชื่อ' "
             "(เช่น 'โครงการซ่อมถนนหมู่ 3 เสี่ยงไหม') ให้เรียก tool นี้ก่อนโดยใส่ project_name เป็น "
@@ -70,7 +77,7 @@ TOOL_DECLARATIONS = [
             "เช่น 'หมู่ที่ 9' คั่นอยู่ — ยิ่งใส่คำน้อยและเฉพาะเจาะจง ยิ่งมีโอกาสเจอ) เพื่อหา project_id "
             "แล้วค่อยเรียก get_project/get_project_legal/get_project_documents ต่อ"
         ),
-        parameters_json_schema={
+        "input_schema": {
             "type": "object",
             "properties": {
                 "subdistrict_id": {"type": "integer", "description": "รหัสตำบล"},
@@ -85,23 +92,23 @@ TOOL_DECLARATIONS = [
                 },
             },
         },
-    ),
-    types.FunctionDeclaration(
-        name="get_project",
-        description="ดูรายละเอียดโครงการ + risk score ล่าสุด + ผล risk factor รายตัว จาก project_id",
-        parameters_json_schema={
+    },
+    {
+        "name": "get_project",
+        "description": "ดูรายละเอียดโครงการ + risk score ล่าสุด + ผล risk factor รายตัว จาก project_id",
+        "input_schema": {
             "type": "object",
             "properties": {"project_id": {"type": "string"}},
             "required": ["project_id"],
         },
-    ),
-    types.FunctionDeclaration(
-        name="get_project_legal",
-        description=(
+    },
+    {
+        "name": "get_project_legal",
+        "description": (
             "ดูผล risk factor พร้อมข้อกฎหมาย/ระเบียบที่เกี่ยวข้อง (legal_refs) และ action_suggestion "
             "ของโครงการ — ใช้ตอบคำถามเรื่องกฎหมาย/ระเบียบ/ความเสี่ยง"
         ),
-        parameters_json_schema={
+        "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {"type": "string"},
@@ -112,38 +119,38 @@ TOOL_DECLARATIONS = [
             },
             "required": ["project_id"],
         },
-    ),
-    types.FunctionDeclaration(
-        name="get_project_documents",
-        description=(
+    },
+    {
+        "name": "get_project_documents",
+        "description": (
             "ดูเอกสารของโครงการ สถานะ เอกสารที่ยังขาด และข้อสังเกตที่พบในเอกสาร (findings) "
             "พร้อมข้อกฎหมายที่เกี่ยวข้อง"
         ),
-        parameters_json_schema={
+        "input_schema": {
             "type": "object",
             "properties": {"project_id": {"type": "string"}},
             "required": ["project_id"],
         },
-    ),
-    types.FunctionDeclaration(
-        name="list_laws",
-        description="ดูรายการกฎหมาย/ระเบียบ/ประกาศ และมาตรา/ข้อทั้งหมดที่มีในระบบ (reference)",
-        parameters_json_schema={"type": "object", "properties": {}},
-    ),
+    },
+    {
+        "name": "list_laws",
+        "description": "ดูรายการกฎหมาย/ระเบียบ/ประกาศ และมาตรา/ข้อทั้งหมดที่มีในระบบ (reference)",
+        "input_schema": {"type": "object", "properties": {}},
+    },
 ]
 
 # tool ตัวที่ 6 — ประกาศเฉพาะเมื่อเปิดใช้ RAG (ดู _tools())
-# description ที่บอก "เมื่อไรไม่ควรใช้" สำคัญพอๆ กับบอกว่าเมื่อไรควรใช้ ไม่งั้น Gemini จะเริ่มเอา RAG
+# description ที่บอก "เมื่อไรไม่ควรใช้" สำคัญพอๆ กับบอกว่าเมื่อไรควรใช้ ไม่งั้น Qwen จะเริ่มเอา RAG
 # ไปตอบคำถามที่ structured query ตอบแม่นกว่า ซึ่งเป็นการถอยหลังจากจุดแข็งเดิมของระบบ (แผน §6.5)
-SEARCH_DOC_DECLARATION = types.FunctionDeclaration(
-    name="search_document_text",
-    description=(
+SEARCH_DOC_DECLARATION = {
+    "name": "search_document_text",
+    "description": (
         "ค้นหาข้อความจากเนื้อหาเอกสารเต็มของโครงการ (ปร.4/ปร.5/ปร.6) — ใช้เมื่อผู้ใช้ถามถึง"
         "รายละเอียดที่อยู่ในตัวเอกสาร เช่น 'ปร.5 ระบุอะไรบ้าง' 'ในเอกสารเขียนว่าอย่างไร' "
         "อย่าใช้เครื่องมือนี้ถามเรื่องสถานะเอกสารขาด/ไม่ขาด หรือ risk score (ใช้ get_project_documents "
         "และ get_project แทน ซึ่งแม่นยำกว่าเพราะอ่านจากข้อมูลที่ตรวจสอบแล้ว)"
     ),
-    parameters_json_schema={
+    "input_schema": {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "ข้อความค้นหาเป็นภาษาไทย"},
@@ -151,16 +158,16 @@ SEARCH_DOC_DECLARATION = types.FunctionDeclaration(
         },
         "required": ["query"],
     },
-)
+}
 
 
-def _tools() -> list[types.Tool]:
-    """ประกาศ tool ตามที่เปิดใช้จริง — PINECONE_API_KEY ว่าง = Gemini ไม่เห็น tool ค้นเอกสารเลย
+def _tools() -> list[dict]:
+    """ประกาศ tool ตามที่เปิดใช้จริง — PINECONE_API_KEY ว่าง = Qwen ไม่เห็น tool ค้นเอกสารเลย
     (feature flag ต้องปิดได้จริง ไม่ใช่แค่ให้ tool คืน error)"""
     decls = list(TOOL_DECLARATIONS)
     if retrieval_service.rag_enabled():
         decls.append(SEARCH_DOC_DECLARATION)
-    return [types.Tool(function_declarations=decls)]
+    return decls
 
 
 def _tool_list_projects(conn: sqlite3.Connection, user: dict, args: dict):
@@ -249,19 +256,26 @@ def _collect_citations(result: dict, citations: list[dict]) -> None:
         )
 
 
-def _history_to_contents(history: list[dict]) -> list[types.Content]:
+def _history_to_messages(history: list[dict]) -> list[dict]:
+    # ChatTurn.role ฝั่ง schema/frontend ยังเป็น "user"/"model" เดิม (ไม่แก้ frontend) — แปลงเป็น
+    # "assistant" เฉพาะตอนสร้าง message ให้ Anthropic-compatible API ซึ่งไม่รู้จัก role "model"
     return [
-        types.Content(role=turn["role"], parts=[types.Part.from_text(text=turn["text"])])
+        {"role": "assistant" if turn["role"] == "model" else "user", "content": turn["text"]}
         for turn in history
     ]
 
 
-def _call_gemini(
-    contents: list[types.Content], config: types.GenerateContentConfig
-) -> types.GenerateContentResponse:
-    """แยกออกมาต่างหากเพื่อ monkeypatch ในเทสต์ได้ (ไม่ยิง Gemini API จริงใน pytest)"""
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    return client.models.generate_content(model=GEMINI_MODEL, contents=contents, config=config)
+def _call_qwen(messages: list[dict], tools: list[dict]):
+    """แยกออกมาต่างหากเพื่อ monkeypatch ในเทสต์ได้ (ไม่ยิง Qwen API จริงใน pytest)"""
+    client = Anthropic(api_key=QWEN_API_KEY, base_url=QWEN_BASE_URL)
+    return client.messages.create(
+        model=QWEN_MODEL,
+        max_tokens=QWEN_MAX_TOKENS,
+        system=SYSTEM_PROMPT,
+        tools=tools,
+        thinking={"type": "enabled", "budget_tokens": QWEN_THINKING_BUDGET_TOKENS},
+        messages=messages,
+    )
 
 
 def handle_message(
@@ -280,56 +294,59 @@ def handle_message(
     คำถามครั้งเดียวแล้วทิ้ง ไม่ถูกเก็บเข้า `history` ที่ client เก็บ/ส่งกลับมาในเทิร์นถัดไป จึงไม่ต้อง
     แบก byte เดิมซ้ำทุกครั้ง และไม่บันทึกลง DB/disk ที่ไหนเลย
     """
-    if not GEMINI_API_KEY:
-        raise ServiceError("ยังไม่ได้ตั้งค่า chatbot (GEMINI_API_KEY ว่าง)")
+    if not QWEN_API_KEY:
+        raise ServiceError("ยังไม่ได้ตั้งค่า chatbot (QWEN_API_KEY ว่าง)")
 
-    contents = _history_to_contents(history)
-    turn_parts = [types.Part.from_text(text=message)]
+    messages = _history_to_messages(history)
+    turn_content: list[dict] = [{"type": "text", "text": message}]
     if attachment is not None:
         data, mime_type = attachment
-        turn_parts.append(types.Part.from_bytes(data=data, mime_type=mime_type))
-    contents.append(types.Content(role="user", parts=turn_parts))
+        b64 = base64.b64encode(data).decode("ascii")
+        block_type = "document" if mime_type == "application/pdf" else "image"
+        turn_content.append(
+            {"type": block_type, "source": {"type": "base64", "media_type": mime_type, "data": b64}}
+        )
+    messages.append({"role": "user", "content": turn_content})
 
-    config = types.GenerateContentConfig(
-        system_instruction=SYSTEM_PROMPT,
-        tools=_tools(),
-        # ปิด automatic function calling ของ SDK — เราคุมการ execute tool เองทุก step
-        # เพื่อให้ scope guard/error handling ผ่าน _execute_tool เสมอ ไม่มีทางหลุด
-        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-    )
-
+    tools = _tools()
     tool_calls: list[dict] = []
     citations: list[dict] = []
     for _ in range(MAX_TOOL_TURNS):
         try:
-            response = _call_gemini(contents, config)
-        except errors.APIError as exc:
-            log.warning("Gemini API error: %s", exc)
+            response = _call_qwen(messages, tools)
+        except APIError as exc:
+            log.warning("Qwen API error: %s", exc)
             raise ServiceError("เรียกใช้บริการ chatbot ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง") from exc
 
-        candidate = response.candidates[0] if response.candidates else None
-        if candidate is None or candidate.content is None or not candidate.content.parts:
+        blocks = response.content or []
+        if not blocks:
             return {"reply": FALLBACK_REPLY, "tool_calls": tool_calls, "citations": citations}
 
-        function_calls = [p.function_call for p in candidate.content.parts if p.function_call is not None]
-        if not function_calls:
-            text = "".join(p.text or "" for p in candidate.content.parts if p.text)
+        tool_use_blocks = [b for b in blocks if b.type == "tool_use"]
+        if not tool_use_blocks:
+            text = "".join(b.text for b in blocks if b.type == "text")
             return {
                 "reply": text.strip() or FALLBACK_REPLY,
                 "tool_calls": tool_calls,
                 "citations": citations,
             }
 
-        contents.append(candidate.content)  # role='model' พร้อม function_call parts
-        response_parts = []
-        for fc in function_calls:
-            args = dict(fc.args or {})
-            result = _execute_tool(conn, user, fc.name, args)
-            tool_calls.append({"name": fc.name, "args": args})
-            if fc.name == "search_document_text":
+        messages.append({"role": "assistant", "content": blocks})  # รวม thinking/tool_use block เดิม
+        tool_result_content = []
+        for block in tool_use_blocks:
+            args = dict(block.input or {})
+            result = _execute_tool(conn, user, block.name, args)
+            tool_calls.append({"name": block.name, "args": args})
+            if block.name == "search_document_text":
                 _collect_citations(result, citations)
-            response_parts.append(types.Part.from_function_response(name=fc.name, response=result))
-        contents.append(types.Content(role="user", parts=response_parts))
+            tool_result_content.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": json.dumps(result, ensure_ascii=False),
+                }
+            )
+        messages.append({"role": "user", "content": tool_result_content})
 
     log.warning("chatbot เกิน MAX_TOOL_TURNS (%d) — ตอบ fallback", MAX_TOOL_TURNS)
     return {"reply": FALLBACK_REPLY, "tool_calls": tool_calls, "citations": citations}

@@ -3,7 +3,7 @@
 เทสต์ชั้น RAG (src/services/retrieval.py + GET /projects/{id}/documents/search + tool ตัวที่ 6)
 
 ไม่ยิง Pinecone จริง — monkeypatch `retrieval._vector_search` เสมอ (pattern เดียวกับ
-`chatbot._call_gemini` ใน test_chatbot.py) เทสต์ตามตาราง §9 ของ docs/rag_pinecone_plan.md
+`chatbot._call_qwen` ใน test_chatbot.py) เทสต์ตามตาราง §9 ของ docs/rag_pinecone_plan.md
 
 ⚠️ MOCK-CON-001 อยู่ตำบลโยนก → auditor3 เห็นได้, auditor1 (ท่าช้าง) เห็นไม่ได้
 """
@@ -53,11 +53,11 @@ def _stub_search(monkeypatch, hits, calls=None):
 
 # ──────────────────────────────────────────────────────────────────────────────
 def test_search_requires_pinecone_key(monkeypatch):
-    """คีย์ว่าง = tool ตัวที่ 6 ไม่ถูกประกาศให้ Gemini เลย และ endpoint ตอบ 503
+    """คีย์ว่าง = tool ตัวที่ 6 ไม่ถูกประกาศให้ Qwen เลย และ endpoint ตอบ 503
     (ระบบเดิม tool 5 ตัวต้องทำงานครบเหมือนไม่มีอะไรเกิดขึ้น)"""
     monkeypatch.setattr(retrieval_service, "PINECONE_API_KEY", "")
 
-    names = [d.name for d in chatbot_service._tools()[0].function_declarations]
+    names = [d["name"] for d in chatbot_service._tools()]
     assert "search_document_text" not in names
     assert len(names) == len(chatbot_service.TOOL_DECLARATIONS)
 
@@ -74,7 +74,7 @@ def test_search_requires_pinecone_key(monkeypatch):
 
 def test_tool_declared_when_key_present(monkeypatch):
     monkeypatch.setattr(retrieval_service, "PINECONE_API_KEY", "dummy-key-for-test")
-    names = [d.name for d in chatbot_service._tools()[0].function_declarations]
+    names = [d["name"] for d in chatbot_service._tools()]
     assert "search_document_text" in names
 
 
@@ -179,28 +179,28 @@ def test_chatbot_returns_citations(monkeypatch):
     """คำตอบที่อ้างเอกสารต้องมี citations ติดมาด้วยเสมอ (แผน §8 — ไม่มี citation ก็ไม่ควรเปิด RAG)"""
     from types import SimpleNamespace
 
-    def _fc_part(name, args):
-        return SimpleNamespace(function_call=SimpleNamespace(name=name, args=args), text=None)
+    def _tool_use_block(name, args):
+        return SimpleNamespace(type="tool_use", id="toolu_1", name=name, input=args)
 
-    def _text_part(text):
-        return SimpleNamespace(function_call=None, text=text)
+    def _text_block(text):
+        return SimpleNamespace(type="text", text=text)
 
     responses = [
-        SimpleNamespace(candidates=[SimpleNamespace(content=SimpleNamespace(parts=[
-            _fc_part("search_document_text", {"query": "Factor F", "project_id": PROJECT})]))]),
-        SimpleNamespace(candidates=[SimpleNamespace(content=SimpleNamespace(parts=[
-            _text_part("ปร.5 ระบุ Factor F = 1.3061 (ปร.5-เดโม-001 หน้า 1)")]))]),
+        SimpleNamespace(content=[
+            _tool_use_block("search_document_text", {"query": "Factor F", "project_id": PROJECT})]),
+        SimpleNamespace(content=[
+            _text_block("ปร.5 ระบุ Factor F = 1.3061 (ปร.5-เดโม-001 หน้า 1)")]),
     ]
     n = {"i": 0}
 
-    def fake_call_gemini(contents, config):
+    def fake_call_qwen(messages, tools):
         r = responses[n["i"]]
         n["i"] += 1
         return r
 
     _stub_search(monkeypatch, [FAKE_HIT])
-    monkeypatch.setattr(chatbot_service, "GEMINI_API_KEY", "dummy-key-for-test")
-    monkeypatch.setattr(chatbot_service, "_call_gemini", fake_call_gemini)
+    monkeypatch.setattr(chatbot_service, "QWEN_API_KEY", "dummy-key-for-test")
+    monkeypatch.setattr(chatbot_service, "_call_qwen", fake_call_qwen)
 
     r = client.post("/chatbot", data={"message": "ปร.5 ระบุอะไรบ้าง"}, headers=AUDITOR3)
     assert r.status_code == 200, r.text

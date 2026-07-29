@@ -47,13 +47,20 @@ JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "480"))  # 8 ชั่�
 API_TITLE = "Local Budget Fraud Risk Assistant API"
 API_VERSION = "0.1.0"
 
-# Gemini API (Google AI Studio) — ใช้ขับเคลื่อน chatbot (src/services/chatbot.py)
+# Qwen (Alibaba Cloud MaaS, Anthropic-compatible API) — ใช้ขับเคลื่อน chatbot (src/services/chatbot.py)
 # ⚠️ ต้องตั้ง env var เอง ไม่มี default ที่ใช้งานได้จริง — ถ้าว่างจะมี warning log ตอน startup
 # (ดู main.py) และ POST /chatbot จะตอบ 503 จนกว่าจะตั้งค่า
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+QWEN_API_KEY = os.getenv("QWEN_API_KEY", "")
+QWEN_BASE_URL = os.getenv(
+    "QWEN_BASE_URL", "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic"
+)
+QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen3.8-max-preview")
+# reasoning effort "high" ของ Anthropic-compatible คือ token budget ใหญ่ ไม่ใช่ enum string
+# QWEN_MAX_TOKENS ต้องมากกว่า QWEN_THINKING_BUDGET_TOKENS เสมอ (ต้องเหลือ token ให้คำตอบจริงด้วย)
+QWEN_MAX_TOKENS = int(os.getenv("QWEN_MAX_TOKENS", "12000"))
+QWEN_THINKING_BUDGET_TOKENS = int(os.getenv("QWEN_THINKING_BUDGET_TOKENS", "8000"))
 
-# Rate limit ต่อ user บน POST /chatbot (กัน cost บานจาก Gemini API — ดู issue #32)
+# Rate limit ต่อ user บน POST /chatbot (กัน cost บานจาก Qwen API — ดู issue #32)
 # นับแบบ sliding window ต่อ process เดียว (ดู src/rate_limit.py)
 CHATBOT_RATE_LIMIT_PER_MINUTE = int(os.getenv("CHATBOT_RATE_LIMIT_PER_MINUTE", "10"))
 
