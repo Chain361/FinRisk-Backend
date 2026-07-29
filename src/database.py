@@ -7,11 +7,19 @@ iterate เป็นค่าตามลำดับคอลัมน์) แ�
 (สไตล์ sqlite3 ที่ query ทั้งโค้ดเบสเขียนไว้) เป็น `%s` ให้อัตโนมัติ —
 เพื่อย้ายจาก SQLite ไป PostgreSQL โดยไม่ต้องแก้ query ทีละจุดทั่วทั้ง repo
 """
+import time
 from contextlib import contextmanager
 
 import psycopg
 
 from .config import DATABASE_URL
+
+# Neon (serverless Postgres) suspend compute เมื่อไม่มีคนใช้สักพัก — request แรกหลัง idle
+# ต้องรอ cold start ถ้าไม่มี retry จะ fail ตรงๆ ครั้งเดียวแล้วครั้งถัดไปถึงจะผ่าน (ดูเหมือนระบบ
+# "เปิดติดๆ ดับๆ") ค่าเหล่านี้ retry เฉพาะตอน connect เท่านั้น ไม่ retry query อื่น
+_CONNECT_TIMEOUT_SECONDS = 10
+_CONNECT_MAX_ATTEMPTS = 3
+_CONNECT_RETRY_DELAY_SECONDS = 0.75
 
 
 class SqliteLikeRow:
@@ -60,12 +68,21 @@ class Connection(psycopg.Connection):
 
 
 def _connect() -> Connection:
-    return Connection.connect(
-        DATABASE_URL,
-        row_factory=_sqlite_row_factory,
-        cursor_factory=Cursor,
-        autocommit=False,
-    )
+    last_error: psycopg.OperationalError | None = None
+    for attempt in range(1, _CONNECT_MAX_ATTEMPTS + 1):
+        try:
+            return Connection.connect(
+                DATABASE_URL,
+                row_factory=_sqlite_row_factory,
+                cursor_factory=Cursor,
+                autocommit=False,
+                connect_timeout=_CONNECT_TIMEOUT_SECONDS,
+            )
+        except psycopg.OperationalError as exc:
+            last_error = exc
+            if attempt < _CONNECT_MAX_ATTEMPTS:
+                time.sleep(_CONNECT_RETRY_DELAY_SECONDS * attempt)
+    raise last_error
 
 
 def get_db():
