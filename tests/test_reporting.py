@@ -136,3 +136,63 @@ def test_audit_report_export_formats_and_scope():
         assert public_user.status_code == 403
     finally:
         _delete_report(report_id)
+
+
+def test_project_auditor_creates_one_report_per_resolved_feedback():
+    """WP report must come from one approved feedback and be exclusive to project auditors."""
+    auditor = {"X-Username": "auditor1"}
+    assignments = client.get("/audit/assignments", headers=auditor)
+    assert assignments.status_code == 200
+    assignment = next(
+        row for row in assignments.json() if row["assigned_by_username"] == "auditor1"
+    )
+    feedback_id = None
+    try:
+        created = client.post(
+            "/audit/feedback",
+            headers=auditor,
+            json={
+                "project_id": assignment["project_id"],
+                "feedback_text": "ข้อตรวจพบสำหรับสร้างรายงาน WP",
+                "suggestions": "ติดตามการแก้ไขตามข้อเสนอแนะ",
+                "concern_level": "high",
+                "likelihood_score": 3,
+                "impact_score": 4,
+                "status": "submitted",
+            },
+        )
+        assert created.status_code == 201
+        feedback_id = created.json()["feedback_id"]
+
+        resolved = client.patch(f"/audit/feedback/{feedback_id}/resolve", headers=auditor)
+        assert resolved.status_code == 200
+        assert resolved.json()["status"] == "resolved"
+
+        preview = client.get(f"/audit/reports/from-feedback/{feedback_id}", headers=auditor)
+        assert preview.status_code == 200
+        assert preview.json()["report_id"] is None
+        assert preview.json()["findings"] == "ข้อตรวจพบสำหรับสร้างรายงาน WP"
+        assert preview.json()["likelihood"] == 3
+        assert preview.json()["impact"] == 4
+
+        saved = client.post(f"/audit/reports/from-feedback/{feedback_id}", headers=auditor)
+        assert saved.status_code == 200, saved.text
+        report_id = saved.json()["report_id"]
+        assert report_id is not None
+
+        saved_again = client.post(f"/audit/reports/from-feedback/{feedback_id}", headers=auditor)
+        assert saved_again.status_code == 200
+        assert saved_again.json()["report_id"] == report_id
+
+        assert client.get(
+            f"/audit/reports/from-feedback/{feedback_id}", headers={"X-Username": "admin"}
+        ).status_code == 403
+    finally:
+        if feedback_id is not None:
+            conn = _connect()
+            try:
+                conn.execute("DELETE FROM audit_reports WHERE feedback_id = ?", (feedback_id,))
+                conn.execute("DELETE FROM auditor_feedback WHERE feedback_id = ?", (feedback_id,))
+                conn.commit()
+            finally:
+                conn.close()

@@ -17,6 +17,7 @@ from ..schemas import (
     AssignmentCreate,
     AssignmentStatusUpdate,
     AssignmentUpdate,
+    AuditReportOut,
     AttachmentOut,
     AuditorFeedbackIn,
     AuditorFeedbackOut,
@@ -57,6 +58,95 @@ def _fetch_feedback(conn: Connection, feedback_id: int) -> dict:
     if row is None:
         raise HTTPException(status_code=404, detail="ไม่พบความคิดเห็น")
     return _serialize_feedback(row)
+
+
+def _report_from_feedback(conn: Connection, feedback_id: int, user: dict) -> dict:
+    """Build the one-to-one audit-report draft from an approved feedback item."""
+    feedback = conn.execute(
+        """SELECT f.*, p.project_name, p.dept_name
+           FROM auditor_feedback f
+           JOIN projects p ON p.project_id = f.project_id
+           WHERE f.feedback_id = ?""",
+        (feedback_id,),
+    ).fetchone()
+    if feedback is None:
+        raise HTTPException(status_code=404, detail="ไม่พบความคิดเห็น")
+    _project_in_scope(conn, feedback["project_id"], user)
+    if feedback["status"] != "resolved":
+        raise HTTPException(status_code=422, detail="ต้องอนุมัติความคิดเห็นก่อนจึงจะบันทึกผลตรวจได้")
+
+    assignment = conn.execute(
+        """SELECT assignment_id, audit_steps
+           FROM assignments
+           WHERE project_id = ? AND assigned_by = ?
+           ORDER BY created_at DESC, assignment_id DESC
+           LIMIT 1""",
+        (feedback["project_id"], user["user_id"]),
+    ).fetchone()
+    if assignment is None:
+        raise HTTPException(status_code=422, detail="ไม่พบงานมอบหมายของผู้ตรวจสอบสำหรับโครงการนี้")
+
+    work_process, objective = _assignment_work_fields(assignment["audit_steps"])
+    risk_levels = {"low": 1, "medium": 3, "high": 5}
+    report = conn.execute(
+        "SELECT report_id, submitted_at FROM audit_reports WHERE feedback_id = ?",
+        (feedback_id,),
+    ).fetchone()
+    return {
+        "report_id": report["report_id"] if report else None,
+        "feedback_id": feedback_id,
+        "assignment_id": assignment["assignment_id"],
+        "project_id": feedback["project_id"],
+        "project_name": feedback["project_name"],
+        "dept_name": feedback["dept_name"],
+        "work_process": work_process or None,
+        "objective": objective or None,
+        "findings": feedback["feedback_text"],
+        "suggestions": feedback["suggestions"],
+        "likelihood": feedback["likelihood_score"],
+        "impact": feedback["impact_score"],
+        "impact_score": feedback["impact_score"],
+        "risk_level": risk_levels.get(feedback["concern_level"]),
+        "concern_level": feedback["concern_level"],
+        "submitted_at": report["submitted_at"] if report else None,
+    }
+
+
+@router.get("/reports/from-feedback/{feedback_id}", response_model=AuditReportOut)
+def audit_report_from_feedback(
+    feedback_id: int,
+    user: dict = Depends(require_roles("project_auditor")),
+    conn: Connection = Depends(get_db),
+):
+    """Preview an approved feedback item as the WP audit-report form."""
+    return _report_from_feedback(conn, feedback_id, user)
+
+
+@router.post("/reports/from-feedback/{feedback_id}", response_model=AuditReportOut)
+def create_audit_report_from_feedback(
+    feedback_id: int,
+    user: dict = Depends(require_roles("project_auditor")),
+    conn: Connection = Depends(get_db),
+):
+    """Persist exactly one audit report per approved feedback item."""
+    report = _report_from_feedback(conn, feedback_id, user)
+    if report["report_id"] is None:
+        row = conn.execute(
+            """INSERT INTO audit_reports
+               (feedback_id, assignment_id, work_process, objective, likelihood, impact,
+                impact_score, risk_level, findings)
+               VALUES (?,?,?,?,?,?,?,?,?)
+               RETURNING report_id, submitted_at""",
+            (
+                report["feedback_id"], report["assignment_id"], report["work_process"],
+                report["objective"], report["likelihood"], report["impact"],
+                report["impact_score"], report["risk_level"], report["findings"],
+            ),
+        ).fetchone()
+        conn.commit()
+        report["report_id"] = row["report_id"]
+        report["submitted_at"] = row["submitted_at"]
+    return report
 
 
 @router.get("/reports/{report_id}/export")

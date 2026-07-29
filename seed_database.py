@@ -291,6 +291,7 @@ CREATE INDEX idx_notifications_user_unread ON notifications(user_id, read_at);
 
 CREATE TABLE audit_reports (
     report_id     INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    feedback_id   INTEGER UNIQUE,
     assignment_id INTEGER NOT NULL REFERENCES assignments(assignment_id),
     work_process  TEXT,
     objective     TEXT,
@@ -319,6 +320,10 @@ CREATE TABLE auditor_feedback (
     resolved_at      TEXT
 );
 CREATE INDEX idx_feedback_project ON auditor_feedback(project_id);
+
+ALTER TABLE audit_reports
+    ADD CONSTRAINT audit_reports_feedback_id_fkey
+    FOREIGN KEY (feedback_id) REFERENCES auditor_feedback(feedback_id);
 
 -- บันทึกการเข้าถึงของผู้ใช้ (accountability trail) — ใครทำอะไรกับ resource ไหน เมื่อไหร่
 -- เขียนโดย middleware ตอน runtime (src/audit_log.py) เริ่มว่างเปล่าใน seed; append-only (ไม่มี UPDATE/DELETE)

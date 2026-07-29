@@ -116,6 +116,25 @@ class AuditorFeedbackOut(BaseModel):
     resolved_at: str | None = None
 
 
+class AuditReportOut(BaseModel):
+    report_id: int | None = None
+    feedback_id: int
+    assignment_id: int
+    project_id: str
+    project_name: str
+    dept_name: str | None = None
+    work_process: str | None = None
+    objective: str | None = None
+    findings: str
+    suggestions: str | None = None
+    likelihood: int | None = None
+    impact: int | None = None
+    impact_score: int | None = None
+    risk_level: int | None = None
+    concern_level: str | None = None
+    submitted_at: str | None = None
+
+
 AssignmentPriority = Literal["low", "normal", "high"]
 AssignmentStatus = Literal[
     "waiting_acceptance",
