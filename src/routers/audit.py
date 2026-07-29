@@ -446,7 +446,7 @@ def create_assignment(
         conn,
         payload.assignee_id,
         "assignment",
-        f"คุณได้รับมอบหมายงานตรวจสอบโครงการ {payload.project_id}",
+        f"คุณได้รับมอบหมายงานตรวจสอบโครงการ {payload.project_id} (สถานะ: กำลังดำเนินการ)",
         "assignment",
         assignment_id,
     )
@@ -751,7 +751,7 @@ def create_feedback(
     feedback_id = cur.fetchone()["feedback_id"]
     if body.status == "submitted" and user["role"] == "risk_analyst":
         assignment = conn.execute(
-            """SELECT assignment_id, status FROM assignments
+            """SELECT assignment_id, assigned_by, status FROM assignments
                WHERE project_id = ? AND assigned_to = ? AND status != 'completed'
                ORDER BY assignment_id DESC LIMIT 1""",
             (body.project_id, user["user_id"]),
@@ -764,6 +764,14 @@ def create_feedback(
                 "under_review",
                 user["user_id"],
                 "ส่ง feedback เพื่อให้ผู้ตรวจสอบสอบทาน",
+            )
+            create_notification(
+                conn,
+                assignment["assigned_by"],
+                "assignment",
+                f"โครงการ {body.project_id} มี feedback ส่งให้สอบทานแล้ว (สถานะ: อยู่ระหว่างสอบทาน)",
+                "assignment",
+                assignment["assignment_id"],
             )
     conn.commit()
     return _fetch_feedback(conn, feedback_id)
@@ -808,7 +816,7 @@ def update_feedback(
     )
     if body.status == "submitted" and user["role"] == "risk_analyst":
         assignment = conn.execute(
-            """SELECT assignment_id, status FROM assignments
+            """SELECT assignment_id, assigned_by, status FROM assignments
                WHERE project_id = ? AND assigned_to = ? AND status != 'completed'
                ORDER BY assignment_id DESC LIMIT 1""",
             (row["project_id"], user["user_id"]),
@@ -821,6 +829,14 @@ def update_feedback(
                 "under_review",
                 user["user_id"],
                 "ส่ง feedback เพื่อให้ผู้ตรวจสอบสอบทาน",
+            )
+            create_notification(
+                conn,
+                assignment["assigned_by"],
+                "assignment",
+                f"โครงการ {row['project_id']} มี feedback ส่งให้สอบทานแล้ว (สถานะ: อยู่ระหว่างสอบทาน)",
+                "assignment",
+                assignment["assignment_id"],
             )
     conn.commit()
     return _fetch_feedback(conn, feedback_id)
@@ -867,7 +883,7 @@ def resolve_feedback(
         (now, now, feedback_id),
     )
     assignment = conn.execute(
-        """SELECT assignment_id, status FROM assignments
+        """SELECT assignment_id, assigned_to, status FROM assignments
            WHERE project_id = ? AND status = 'under_review'
            ORDER BY assignment_id DESC LIMIT 1""",
         (row["project_id"],),
@@ -880,6 +896,14 @@ def resolve_feedback(
             "completed",
             user["user_id"],
             "ปิดงานหลังผู้ตรวจสอบโครงการอนุมัติ feedback",
+        )
+        create_notification(
+            conn,
+            assignment["assigned_to"],
+            "assignment",
+            f"feedback ของโครงการ {row['project_id']} ได้รับการอนุมัติแล้ว (สถานะ: เสร็จสิ้น)",
+            "assignment",
+            assignment["assignment_id"],
         )
     conn.commit()
     return _fetch_feedback(conn, feedback_id)

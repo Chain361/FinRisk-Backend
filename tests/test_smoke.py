@@ -757,9 +757,17 @@ def test_assignment_workflow_full_flow():
     )
     assert created.status_code == 201
     assignment_id = created.json()["assignment_id"]
+    feedback_id = None
 
     try:
         assert created.json()["status"] == "in_progress"
+        analyst_notifications = client.get("/notifications", headers=analyst_headers).json()["notifications"]
+        assert any(
+            n["ref_type"] == "assignment"
+            and n["ref_id"] == str(assignment_id)
+            and "กำลังดำเนินการ" in n["message"]
+            for n in analyst_notifications
+        )
         submitted = client.post(
             "/audit/feedback",
             headers=analyst_headers,
@@ -775,12 +783,26 @@ def test_assignment_workflow_full_flow():
         assert submitted.status_code == 201, submitted.text
         feedback_id = submitted.json()["feedback_id"]
         assert client.get(f"/audit/assignments/{assignment_id}", headers=auditor_headers).json()["assignment"]["status"] == "under_review"
+        auditor_notifications = client.get("/notifications", headers=auditor_headers).json()["notifications"]
+        assert any(
+            n["ref_type"] == "assignment"
+            and n["ref_id"] == str(assignment_id)
+            and "อยู่ระหว่างสอบทาน" in n["message"]
+            for n in auditor_notifications
+        )
 
         r = client.patch(
             f"/audit/feedback/{submitted.json()['feedback_id']}/resolve", headers=auditor_headers
         )
         assert r.status_code == 200
         assert client.get(f"/audit/assignments/{assignment_id}", headers=auditor_headers).json()["assignment"]["status"] == "completed"
+        analyst_notifications = client.get("/notifications", headers=analyst_headers).json()["notifications"]
+        assert any(
+            n["ref_type"] == "assignment"
+            and n["ref_id"] == str(assignment_id)
+            and "เสร็จสิ้น" in n["message"]
+            for n in analyst_notifications
+        )
 
         history = client.get(f"/audit/assignments/{assignment_id}", headers=auditor_headers).json()
         completion_entries = [
