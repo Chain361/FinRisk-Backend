@@ -19,11 +19,11 @@ from .config import (
     API_TITLE,
     API_VERSION,
     CORS_ORIGINS,
-    GEMINI_API_KEY,
     JWT_ALGORITHM,
     JWT_SECRET,
     JWT_SECRET_DEFAULT,
     PINECONE_API_KEY,
+    QWEN_API_KEY,
 )
 from .database import _connect, _pool
 from .error_log import record_error_debug
@@ -55,10 +55,10 @@ if JWT_SECRET == JWT_SECRET_DEFAULT:
     log.warning(
         "JWT_SECRET ยังเป็นค่า default ที่ไม่ปลอดภัย — ตั้ง env var JWT_SECRET เป็นค่าสุ่มยาวๆ ก่อนขึ้น production"
     )
-if not GEMINI_API_KEY:
-    log.warning("GEMINI_API_KEY ยังไม่ได้ตั้งค่า — POST /chatbot จะตอบ 503 จนกว่าจะตั้ง env var นี้")
+if not QWEN_API_KEY:
+    log.warning("QWEN_API_KEY ยังไม่ได้ตั้งค่า — POST /chatbot จะตอบ 503 จนกว่าจะตั้ง env var นี้")
 if not PINECONE_API_KEY:
-    # feature flag: ไม่มีคีย์ = ไม่ประกาศ tool ค้นเอกสารให้ Gemini เลย (ระบบเดิม tool 5 ตัวทำงานครบ)
+    # feature flag: ไม่มีคีย์ = ไม่ประกาศ tool ค้นเอกสารให้ Qwen เลย (ระบบเดิม tool 5 ตัวทำงานครบ)
     log.warning(
         "PINECONE_API_KEY ยังไม่ได้ตั้งค่า — chatbot จะไม่มี tool ค้นเนื้อหาเอกสารเต็ม "
         "และ GET /projects/{id}/documents/search จะตอบ 503"

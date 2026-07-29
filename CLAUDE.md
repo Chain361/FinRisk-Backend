@@ -40,7 +40,7 @@ curl -H "Authorization: Bearer <token>" \
 **env vars:** `src/config.py` โหลด `.env` ที่ repo root ให้อัตโนมัติตอน import (`load_dotenv()`)
 ลำดับความสำคัญ: **env จาก shell/Vercel ชนะ `.env` เสมอ** (ใช้ `os.environ.setdefault`)
 ใส่คีย์ใหม่ที่ `.env` ได้เลย ไม่ต้อง export เอง — `.env` อยู่ใน `.gitignore` ห้าม commit
-คีย์ที่ใช้: `DATABASE_URL`, `JWT_SECRET`, `GEMINI_API_KEY`, `PINECONE_API_KEY`, `TYPHOON_OCR_API_KEY`,
+คีย์ที่ใช้: `DATABASE_URL`, `JWT_SECRET`, `QWEN_API_KEY`, `PINECONE_API_KEY`, `TYPHOON_OCR_API_KEY`,
 `RAG_TOP_K`, `RAG_MIN_SCORE`, `RAG_MAX_CHUNK_TOKENS`
 
 ## สถาปัตยกรรม
@@ -87,8 +87,8 @@ curl -H "Authorization: Bearer <token>" \
 มาเขียนซ้ำใน router** เพราะ logic ต้องอยู่ที่เดียวตามกติกาด้านล่าง
 
 **Chatbot (`POST /chatbot`, PR #26):** ไม่มีตรรกะ query ของตัวเอง — `src/services/chatbot.py`
-เรียก service function เดิม (`projects.py`/`legal.py`/`documents.py`) เป็น "tool" ให้ Gemini
-function-calling เท่านั้น การ์ดสิทธิ์จึงเป็น deterministic ผ่าน `scope_subdistrict_ids` เดิม
+เรียก service function เดิม (`projects.py`/`legal.py`/`documents.py`) เป็น "tool" ให้ Qwen
+(ผ่าน Anthropic-compatible API) function-calling เท่านั้น การ์ดสิทธิ์จึงเป็น deterministic ผ่าน `scope_subdistrict_ids` เดิม
 ไม่ใช่ prompt guardrail รายละเอียดโมเดล/ทำไมไม่ใช้ RAG ดู `docs/chatbot_architecture.md`
 
 **เขียน SQL ใหม่:** ใช้ `?` placeholder แบบเดิมได้เลย (แปลงเป็น `%s` อัตโนมัติที่ `src/database.py`)
@@ -166,6 +166,6 @@ function-calling เท่านั้น การ์ดสิทธิ์จ�
 - `JWT_SECRET` default (`dev-only-insecure-secret-change-before-production`) แค่ warn ตอน startup
   ไม่ fail-fast — ควร raise/exit ตอน import ถ้ายังเป็นค่า default และ env เป็น production (issue #31)
 - `POST /chatbot` ไม่มี rate limit ต่อ user เลย — 1 ข้อความอาจ trigger tool-calling ได้ถึง
-  `MAX_TOOL_TURNS=5` รอบ เสี่ยง cost ของ Gemini API บานถ้ามีคนยิงรัว (issue #32)
+  `MAX_TOOL_TURNS=5` รอบ เสี่ยง cost ของ Qwen API บานถ้ามีคนยิงรัว (issue #32)
 - log retention (archive/delete `access_log` ตามอายุ) — ยังไม่มีโค้ด/migration ใดๆ บน `main`
   เลย เป็น backlog ล้วนๆ (issue #28)
