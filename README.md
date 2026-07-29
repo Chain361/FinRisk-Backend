@@ -190,7 +190,7 @@ data_modelling/
 │  ├─ database.py               # ตัวช่วยต่อ PostgreSQL (dependency get_db)
 │  ├─ auth.py                   # login (bcrypt + JWT) + role/scope guard
 │  ├─ schemas.py                # Pydantic models
-│  ├─ notify.py                 # create_notification() — helper insert-only ใช้โดย audit.py/admin.py
+│  ├─ notify.py                 # create_notification() — helper insert-only ใช้โดย audit.py
 │  ├─ services/                 # service function (contract ที่ router + chatbot ใช้ร่วมกัน)
 │  │  ├─ common.py              # scope guard + latest_run_id + domain error (ServiceError/NotFoundError/ForbiddenError)
 │  │  ├─ projects.py            # list_projects_view / project_summary_view

@@ -302,14 +302,6 @@ CLARIFICATION_SELECT = """
 """
 
 
-def _notify_other_party(conn: Connection, assignment: SqliteLikeRow, actor: dict, notif_type: str, message: str) -> None:
-    """แจ้งเตือนอีกฝ่ายของ assignment (risk_analyst ↔ project_auditor ที่มอบหมายงาน) ไม่แจ้งตัวเอง"""
-    other_user_id = (
-        assignment["assigned_by"] if actor["user_id"] == assignment["assigned_to"] else assignment["assigned_to"]
-    )
-    create_notification(conn, other_user_id, notif_type, message, "assignment", assignment["assignment_id"])
-
-
 def _fetch_attachment_meta(conn: Connection, attachment_id: int) -> dict:
     row = conn.execute(ATTACHMENT_SELECT + " WHERE a.attachment_id = ?", (attachment_id,)).fetchone()
     if row is None:
@@ -552,7 +544,7 @@ async def upload_attachment(
     conn: Connection = Depends(get_db),
 ):
     """แนบไฟล์หลักฐาน (evidence) — เก็บเป็น BYTEA ตรงๆ ใน Postgres (ไม่มี object storage ในระบบ)"""
-    assignment = _assignment_in_scope(conn, assignment_id, user)
+    _assignment_in_scope(conn, assignment_id, user)
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in ALLOWED_ATTACHMENT_EXTENSIONS:
         raise HTTPException(status_code=422, detail=f"ไม่รองรับไฟล์นามสกุล {ext or '(ไม่ทราบ)'}")
@@ -576,10 +568,6 @@ async def upload_attachment(
         ),
     )
     attachment_id = cursor.fetchone()["attachment_id"]
-    _notify_other_party(
-        conn, assignment, user, "attachment",
-        f"มีไฟล์หลักฐานใหม่แนบในงานตรวจสอบโครงการ {assignment['project_id']}: {file.filename}",
-    )
     conn.commit()
     return _fetch_attachment_meta(conn, attachment_id)
 
@@ -650,7 +638,7 @@ def create_clarification(
     user: dict = Depends(require_roles("admin", "project_auditor", "risk_analyst")),
     conn: Connection = Depends(get_db),
 ):
-    assignment = _assignment_in_scope(conn, assignment_id, user)
+    _assignment_in_scope(conn, assignment_id, user)
     cursor = conn.execute(
         """INSERT INTO assignment_clarifications (assignment_id, message_text, created_by)
            VALUES (?,?,?)
@@ -658,10 +646,6 @@ def create_clarification(
         (assignment_id, payload.message_text, user["user_id"]),
     )
     clarification_id = cursor.fetchone()["clarification_id"]
-    _notify_other_party(
-        conn, assignment, user, "clarification",
-        f"มีข้อความใหม่ในกระทู้ขอความชัดเจนของงานตรวจสอบโครงการ {assignment['project_id']}",
-    )
     conn.commit()
     row = conn.execute(
         CLARIFICATION_SELECT + " WHERE c.clarification_id = ?", (clarification_id,)

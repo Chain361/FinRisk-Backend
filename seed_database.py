@@ -1566,7 +1566,7 @@ def seed_assignments(cur):
         cur.execute("""INSERT INTO notifications
             (user_id, type, message, ref_type, ref_id, created_at)
             VALUES (?,?,?,?,?,?)""",
-            (analyst_id, "assignment", "คุณได้รับมอบหมายงานตรวจสอบโครงการใหม่",
+            (analyst_id, "assignment", "คุณได้รับมอบหมายงานตรวจสอบโครงการใหม่ (สถานะ: กำลังดำเนินการ)",
              "assignment", str(assignment_id), created_at))
 
         # เดินสถานะต่อจนถึงปลายทาง เพื่อให้ status_history มีหลายแถว (เหมือน flow จริง)

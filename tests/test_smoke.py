@@ -458,10 +458,10 @@ def test_assignment_attachments_and_clarifications():
             json={"message_text": "ไม่ควรเห็น"},
         ).status_code == 403
 
-        # แจ้งเตือนถูกสร้างให้อีกฝ่ายเมื่อโพสต์ข้อความ (analyst ถาม → แจ้ง auditor ผู้มอบหมาย)
+        # ไฟล์หลักฐานและกระทู้ขอความชัดเจนไม่สร้าง notification เพราะสงวนไว้สำหรับสถานะงาน
         notif = client.get("/notifications", headers=auditor_headers).json()
-        assert any(
-            n["type"] == "clarification" and n["ref_id"] == str(assignment_id)
+        assert not any(
+            n["type"] in {"attachment", "clarification"} and n["ref_id"] == str(assignment_id)
             for n in notif["notifications"]
         )
     finally:
@@ -874,92 +874,6 @@ def test_notifications_created_on_assignment_and_read_flow():
             con.execute("DELETE FROM notifications WHERE ref_type = 'assignment' AND ref_id = ?", (str(assignment_id),))
             con.execute("DELETE FROM assignment_status_history WHERE assignment_id = ?", (assignment_id,))
             con.execute("DELETE FROM assignments WHERE assignment_id = ?", (assignment_id,))
-            con.commit()
-
-
-def test_notify_new_high_risk_projects_diff():
-    """#19: risk-engine rerun แจ้งเตือน project_auditor เฉพาะโครงการที่เพิ่งกลาย high (ไม่ high ใน run ก่อน)"""
-    from src.database import db_session
-    from src.routers.admin import _notify_new_high_risk_projects
-
-    with db_session() as con:
-        row = con.execute("""
-            SELECT prs.project_id, p.subdistrict_id
-            FROM project_risk_scores prs
-            JOIN projects p ON p.project_id = prs.project_id
-            WHERE prs.run_id = (SELECT MAX(run_id) FROM assessment_runs)
-            ORDER BY prs.risk_score DESC LIMIT 1
-        """).fetchone()
-        project_id, subdistrict_id = row["project_id"], row["subdistrict_id"]
-
-        before_ids = {r["notification_id"] for r in con.execute(
-            "SELECT notification_id FROM notifications WHERE ref_type = 'project' AND ref_id = ?", (project_id,)
-        )}
-
-        fake_run_ids = []
-        try:
-            prev_run_id = con.execute(
-                "INSERT INTO assessment_runs (triggered_by, note) VALUES ('pytest','diff test') RETURNING run_id"
-            ).fetchone()["run_id"]
-            fake_run_ids.append(prev_run_id)
-            con.execute(
-                """INSERT INTO project_risk_scores (run_id, project_id, risk_score, risk_level, factors_triggered)
-                   VALUES (?,?,?,?,?)""",
-                (prev_run_id, project_id, 10.0, "low", 0),
-            )
-
-            new_run_id = con.execute(
-                "INSERT INTO assessment_runs (triggered_by, note) VALUES ('pytest','diff test') RETURNING run_id"
-            ).fetchone()["run_id"]
-            fake_run_ids.append(new_run_id)
-            con.execute(
-                """INSERT INTO project_risk_scores (run_id, project_id, risk_score, risk_level, factors_triggered)
-                   VALUES (?,?,?,?,?)""",
-                (new_run_id, project_id, 90.0, "high", 3),
-            )
-            con.commit()
-
-            _notify_new_high_risk_projects(con, con, new_run_id)
-            con.commit()
-
-            after_ids = {r["notification_id"] for r in con.execute(
-                "SELECT notification_id FROM notifications WHERE ref_type = 'project' AND ref_id = ?", (project_id,)
-            )}
-            new_ids = after_ids - before_ids
-            assert new_ids, "ควรมี notification ใหม่เมื่อโครงการเปลี่ยนจาก low -> high"
-
-            auditor_ids = {r["user_id"] for r in con.execute(
-                "SELECT user_id FROM users WHERE role='project_auditor' AND subdistrict_id = ?", (subdistrict_id,)
-            )}
-            placeholders = ",".join("?" * len(new_ids))
-            notified_users = {r["user_id"] for r in con.execute(
-                f"SELECT user_id FROM notifications WHERE notification_id IN ({placeholders})", list(new_ids)
-            )}
-            assert notified_users == auditor_ids
-
-            # rerun ด้วย run_id เดิม (idempotent-ish check) ไม่ควร error ซ้ำ
-            no_prev = con.execute(
-                "SELECT run_id FROM assessment_runs ORDER BY run_id ASC LIMIT 1"
-            ).fetchone()["run_id"]
-            _notify_new_high_risk_projects(con, con, no_prev)  # run แรกสุด ไม่มี run ก่อนหน้า -> ไม่ error, ไม่ notify
-            con.commit()
-        finally:
-            # ระวัง: "NOT IN (NULL)" ไม่ match อะไรเลยใน SQL — ถ้า before_ids ว่างต้องลบทั้งหมดตรงๆ
-            if before_ids:
-                placeholders = ",".join("?" * len(before_ids))
-                con.execute(
-                    f"DELETE FROM notifications WHERE ref_type = 'project' AND ref_id = ? "
-                    f"AND notification_id NOT IN ({placeholders})",
-                    [project_id] + list(before_ids),
-                )
-            else:
-                con.execute(
-                    "DELETE FROM notifications WHERE ref_type = 'project' AND ref_id = ?",
-                    (project_id,),
-                )
-            for run_id in fake_run_ids:
-                con.execute("DELETE FROM project_risk_scores WHERE run_id = ?", (run_id,))
-                con.execute("DELETE FROM assessment_runs WHERE run_id = ?", (run_id,))
             con.commit()
 
 

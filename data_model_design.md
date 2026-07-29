@@ -536,10 +536,10 @@ CREATE TABLE error_debug_log (
 CREATE TABLE notifications (
     notification_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     user_id    INTEGER NOT NULL REFERENCES users(user_id),
-    type       TEXT NOT NULL,          -- 'assignment' | 'high_risk'
+    type       TEXT NOT NULL,          -- 'assignment'
     message    TEXT NOT NULL,
-    ref_type   TEXT,                   -- 'assignment' | 'project'
-    ref_id     TEXT,                   -- assignment_id หรือ project_id (TEXT รองรับทั้งคู่)
+    ref_type   TEXT,                   -- 'assignment'
+    ref_id     TEXT,                   -- assignment_id (TEXT)
     read_at    TEXT,
     created_at TEXT NOT NULL DEFAULT (now_text())
 );
@@ -547,12 +547,9 @@ CREATE INDEX idx_notifications_user_unread ON notifications(user_id, read_at);
 ```
 
 **Trigger points** (เขียนโดย `src/notify.py::create_notification()` — insert อย่างเดียว, commit ร่วม transaction เดียวกับจุดเรียก):
-- `POST /audit/assignments` สำเร็จ → แจ้ง `assigned_to` (risk_analyst ที่ได้รับมอบหมาย)
-- `POST /admin/risk-engine/run` → เทียบ `run_id` ปัจจุบันกับ `run_id` ก่อนหน้าใน `project_risk_scores`,
-  โครงการที่ `risk_level='high'` รอบนี้แต่ไม่ high ใน run ก่อน = "ใหม่" → แจ้ง `project_auditor`
-  ของตำบลนั้น. **ถ้าไม่มี run ก่อนหน้า (run แรกของระบบ) จะไม่แจ้งเตือน** กัน flood ตอนเริ่มระบบ.
-  Query diff อยู่ที่ `src/routers/admin.py` เท่านั้น (ไม่แตะ `run_project_engine`/`seed_database.py`
-  ตามกติกาห้ามแก้ risk logic นอกไฟล์เดียว)
+- `POST /audit/assignments` สำเร็จ → แจ้ง `assigned_to` ว่าสถานะ `กำลังดำเนินการ`
+- นักวิเคราะห์ส่ง feedback → แจ้ง `assigned_by` ว่าสถานะ `อยู่ระหว่างสอบทาน`
+- ผู้ตรวจสอบโครงการอนุมัติ feedback → แจ้ง `assigned_to` ว่าสถานะ `เสร็จสิ้น`
 
 **อ่าน:** `GET /notifications` (ของตัวเองเท่านั้น, `?unread=true` filter), `PATCH /notifications/{id}/read`,
 `POST /notifications/read-all` — ทั้งหมดใน `src/routers/notifications.py`
