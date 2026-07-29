@@ -79,10 +79,9 @@ def risk_register_filename(rows: list[dict], generated_at: datetime) -> str:
 
 
 def audit_report_filename(data: dict, extension: str) -> str:
-    """ตั้งชื่อรายงานด้วย project_id, ตำบล และ report_id ที่อ้างอิงกลับได้แน่นอน."""
+    """ตั้งชื่อไฟล์รายงานเป็น project_id_report.<extension>."""
     project_id = _filename_token(data["project_id"], "project")
-    subdistrict = _subdistrict_slug(data.get("subdistrict"))
-    return f"finrisk_audit_report_{project_id}_{subdistrict}_{data['report_id']}.{extension}"
+    return f"{project_id}_report.{extension}"
 
 
 def _thai_date(value: str | None) -> str:

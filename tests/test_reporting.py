@@ -110,7 +110,7 @@ def test_audit_report_export_formats_and_scope():
         assert pdf.headers["content-type"].startswith("application/pdf")
         assert pdf.content.startswith(b"%PDF")
         assert re.search(
-            rf"attachment; filename=finrisk_audit_report_[a-z0-9_-]+_thachang_{report_id}\.pdf$",
+            r"attachment; filename=[a-z0-9_-]+_report\.pdf$",
             pdf.headers["content-disposition"],
         )
         pdf_text = PdfReader(io.BytesIO(pdf.content)).pages[0].extract_text()
@@ -123,7 +123,7 @@ def test_audit_report_export_formats_and_scope():
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
         assert re.search(
-            rf"attachment; filename=finrisk_audit_report_[a-z0-9_-]+_thachang_{report_id}\.xlsx$",
+            r"attachment; filename=[a-z0-9_-]+_report\.xlsx$",
             xlsx.headers["content-disposition"],
         )
         assert "xl/worksheets/sheet1.xml" in zipfile.ZipFile(io.BytesIO(xlsx.content)).namelist()
