@@ -27,6 +27,7 @@ from . import documents as documents_service
 from . import legal as legal_service
 from . import projects as projects_service
 from . import retrieval as retrieval_service
+from . import subdistricts as subdistricts_service
 from .common import ForbiddenError, NotFoundError, ServiceError
 
 log = logging.getLogger("finrisk.chatbot")
@@ -64,9 +65,23 @@ SYSTEM_PROMPT = """\
    ก่อนสรุปว่าไม่พบ เมื่อเจอ project_id แล้วค่อยเรียก get_project/get_project_legal/get_project_documents
    ต่อ ถ้าค้นแล้วยังไม่เจอหรือเจอมากกว่า 1 โครงการที่ชื่อคล้ายกัน ให้ถามผู้ใช้กลับให้ระบุให้ชัดเจนขึ้น
    (เช่น ขอ project_id หรือชื่อเต็ม) ห้ามเดาว่าเป็นโครงการไหน
+10. ถ้าผู้ใช้อ้างถึงตำบลด้วย "ชื่อตำบล" (เช่น "ตำบลท่าช้าง" "ในตำบลโยนก") ให้เรียก list_subdistricts
+   ก่อนเสมอเพื่อหา subdistrict_id ที่ตรงกับชื่อนั้น แล้วค่อยส่ง subdistrict_id ที่ได้ไปให้ list_projects
+   **ห้ามถามรหัสตำบลจากผู้ใช้ และห้ามเดารหัสเอง** — ผู้ใช้ไม่รู้รหัสภายในของระบบ
+   ถ้าชื่อที่ผู้ใช้พิมพ์ไม่ตรงกับตำบลใดใน list_subdistricts ให้บอกว่าไม่พบตำบลนั้นในสิทธิ์ที่เข้าถึงได้
+   พร้อมบอกรายชื่อตำบลที่มีให้เลือก ถ้าชื่อคล้ายกันหลายตำบลให้ถามกลับให้ระบุชัดเจน
 """
 
 TOOL_DECLARATIONS = [
+    {
+        "name": "list_subdistricts",
+        "description": (
+            "แสดงรายชื่อตำบลที่ user มีสิทธิ์เห็น พร้อม subdistrict_id (รหัสตำบลที่ใช้จริงในระบบ) "
+            "ใช้เมื่อผู้ใช้อ้างถึงตำบลด้วย 'ชื่อ' (เช่น 'ตำบลท่าช้าง') เพื่อหา subdistrict_id "
+            "ก่อนส่งต่อให้ list_projects — ห้ามเดารหัสตำบลเอง และห้ามขอรหัสจากผู้ใช้"
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
     {
         "name": "list_projects",
         "description": (
@@ -80,7 +95,13 @@ TOOL_DECLARATIONS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "subdistrict_id": {"type": "integer", "description": "รหัสตำบล"},
+                "subdistrict_id": {
+                    "type": "integer",
+                    "description": (
+                        "รหัสตำบลในระบบ (เลขจำนวนเต็มน้อยๆ) — ต้องได้มาจาก list_subdistricts เท่านั้น "
+                        "ห้ามเดาเอง และห้ามใช้ project_id (เลขยาว 10+ หลัก) มาใส่ช่องนี้เด็ดขาด"
+                    ),
+                },
                 "risk_level": {"type": "string", "enum": ["low", "medium", "high"]},
                 "project_name": {
                     "type": "string",
@@ -139,7 +160,7 @@ TOOL_DECLARATIONS = [
     },
 ]
 
-# tool ตัวที่ 6 — ประกาศเฉพาะเมื่อเปิดใช้ RAG (ดู _tools())
+# tool ค้นข้อความในเอกสาร (เอกสาร/แผนเรียกว่า "tool ตัวที่ 6") — ประกาศเฉพาะเมื่อเปิดใช้ RAG (ดู _tools())
 # description ที่บอก "เมื่อไรไม่ควรใช้" สำคัญพอๆ กับบอกว่าเมื่อไรควรใช้ ไม่งั้น Qwen จะเริ่มเอา RAG
 # ไปตอบคำถามที่ structured query ตอบแม่นกว่า ซึ่งเป็นการถอยหลังจากจุดแข็งเดิมของระบบ (แผน §6.5)
 SEARCH_DOC_DECLARATION = {
@@ -168,6 +189,10 @@ def _tools() -> list[dict]:
     if retrieval_service.rag_enabled():
         decls.append(SEARCH_DOC_DECLARATION)
     return decls
+
+
+def _tool_list_subdistricts(conn: sqlite3.Connection, user: dict, args: dict):
+    return subdistricts_service.list_subdistricts_view(conn, user)
 
 
 def _tool_list_projects(conn: sqlite3.Connection, user: dict, args: dict):
@@ -206,6 +231,7 @@ def _tool_search_document_text(conn: sqlite3.Connection, user: dict, args: dict)
 
 
 TOOL_DISPATCH = {
+    "list_subdistricts": _tool_list_subdistricts,
     "list_projects": _tool_list_projects,
     "get_project": _tool_get_project,
     "get_project_legal": _tool_get_project_legal,
