@@ -2,8 +2,9 @@
 """/subdistricts — ข้อมูลตำบล (master + note ความครบถ้วนข้อมูล)"""
 from fastapi import APIRouter, Depends
 
-from ..auth import get_current_user, scope_subdistrict_ids
-from ..database import Connection, get_db, rows_to_dicts
+from ..auth import get_current_user
+from ..database import Connection, get_db
+from ..services import subdistricts as subdistricts_service
 
 router = APIRouter(prefix="/subdistricts", tags=["subdistricts"])
 
@@ -13,15 +14,4 @@ def list_subdistricts(
     user: dict = Depends(get_current_user),
     conn: Connection = Depends(get_db),
 ):
-    ids = scope_subdistrict_ids(conn, user)
-    if ids is None:
-        rows = conn.execute("SELECT * FROM subdistricts ORDER BY subdistrict_id").fetchall()
-    elif not ids:
-        rows = []
-    else:
-        ph = ",".join("?" * len(ids))
-        rows = conn.execute(
-            f"SELECT * FROM subdistricts WHERE subdistrict_id IN ({ph}) ORDER BY subdistrict_id",
-            ids,
-        ).fetchall()
-    return rows_to_dicts(rows)
+    return subdistricts_service.list_subdistricts_view(conn, user)

@@ -212,3 +212,49 @@ def test_execute_tool_scope_guard_blocks_cross_subdistrict_access():
         )
         assert "error" not in result3
         assert "result" in result3  # project_legal_view คืน list → ถูก wrap เป็น {"result": [...]}
+
+
+def test_chatbot_list_subdistricts_tool_resolves_name_to_id():
+    """ผู้ใช้ถามด้วย "ชื่อตำบล" — ต้องมี tool แปลงชื่อ → subdistrict_id ให้ LLM
+
+    กันอาการที่เจอจริงตอน demo: ไม่มี tool นี้ LLM เลยถามรหัสตำบลจากผู้ใช้ ผู้ใช้ตอบ project_id
+    (เลข 10+ หลัก) กลับมา → list_projects กรองแล้วได้ 0 แถว → ตอบ "ไม่พบโครงการ" ทั้งที่มีข้อมูลอยู่
+    """
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT user_id, username, display_name, role, subdistrict_id FROM users WHERE username = ?",
+            ("admin",),
+        ).fetchone()
+        admin = dict(row)
+
+        result = chatbot_service._execute_tool(conn, admin, "list_subdistricts", {})
+        assert "error" not in result
+        subs = result["result"]
+        assert subs, "admin ต้องเห็นตำบลทั้งหมด"
+
+        by_name = {s["name_th"]: s["subdistrict_id"] for s in subs}
+        assert "โยนก" in by_name, f"ไม่พบตำบลโยนกใน {list(by_name)}"
+
+        # รหัสที่ได้ต้องใช้กรอง list_projects ได้จริง (คือ flow ที่พังตอน demo)
+        yonok_id = by_name["โยนก"]
+        projects = chatbot_service._execute_tool(
+            conn, admin, "list_projects", {"subdistrict_id": yonok_id, "risk_level": "high"}
+        )
+        assert "error" not in projects
+        assert projects["result"], "ตำบลโยนกต้องมีโครงการเสี่ยงสูงอย่างน้อย 1 โครงการ"
+        assert all(p["subdistrict_id"] == yonok_id for p in projects["result"])
+
+
+def test_chatbot_list_subdistricts_respects_scope():
+    """scope guard ต้องบังคับที่ tool นี้ด้วย — auditor ท่าช้างห้ามเห็นตำบลอื่น"""
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT user_id, username, display_name, role, subdistrict_id FROM users WHERE username = ?",
+            ("auditor1",),
+        ).fetchone()
+        auditor1 = dict(row)
+
+        result = chatbot_service._execute_tool(conn, auditor1, "list_subdistricts", {})
+        assert "error" not in result
+        names = [s["name_th"] for s in result["result"]]
+        assert names == ["ท่าช้าง"], f"auditor1 ต้องเห็นแค่ตำบลตัวเอง แต่เห็น {names}"
